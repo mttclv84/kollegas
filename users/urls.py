@@ -1,0 +1,37 @@
+from django.urls import path
+from .views import (
+    MeView, UserListCreateView, UserDetailView, DisattivatIListView,
+    RoleListCreateView, RoleDetailView, PercorsoCrescitaListCreateView, PercorsoCrescitaDeleteView,
+    DevelopmentSearchView, UserDevelopmentDetailView, AuditLogListView,
+    UserDocListCreateView, UserDocDetailView,
+    StatsView, StatsExportView,
+    RichiestaCreazionoProfiloListCreateView, RichiestaCreazionoProfiloDetailView,
+    RichiestaEliminazioneProfiloListCreateView, RichiestaEliminazioneProfiloDetailView,
+    AccountBadgeView, NextMatricolaView, NotificaTrasferimentoView,
+)
+
+urlpatterns = [
+    path('me/', MeView.as_view(), name='me'),
+    path('users/', UserListCreateView.as_view(), name='user-list'),
+    path('users/disattivati/', DisattivatIListView.as_view(), name='user-disattivati'),
+    path('users/search/', DevelopmentSearchView.as_view(), name='user-search'),
+    path('users/audit/', AuditLogListView.as_view(), name='audit-log'),
+    path('users/<int:pk>/', UserDetailView.as_view(), name='user-detail'),
+    path('users/<int:pk>/development/', UserDevelopmentDetailView.as_view(), name='user-development'),
+    path('users/<int:user_id>/percorso/', PercorsoCrescitaListCreateView.as_view(), name='percorso-crescita'),
+    path('percorso/<int:pk>/', PercorsoCrescitaDeleteView.as_view(), name='percorso-delete'),
+    path('ruoli/', RoleListCreateView.as_view(), name='role-list'),
+    path('ruoli/<int:pk>/', RoleDetailView.as_view(), name='role-detail'),
+    path('users/<int:user_id>/docs/', UserDocListCreateView.as_view(), name='user-docs'),
+    path('docs/<int:pk>/', UserDocDetailView.as_view(), name='doc-detail'),
+    path('stats/', StatsView.as_view(), name='stats'),
+    path('stats/export/', StatsExportView.as_view(), name='stats-export'),
+    path('users/next-matricola/', NextMatricolaView.as_view(), name='next-matricola'),
+    path('richieste-creazione/', RichiestaCreazionoProfiloListCreateView.as_view(), name='richieste-creazione'),
+    path('richieste-creazione/<int:pk>/', RichiestaCreazionoProfiloDetailView.as_view(), name='richiesta-creazione-detail'),
+    path('richieste-eliminazione/', RichiestaEliminazioneProfiloListCreateView.as_view(), name='richieste-eliminazione'),
+    path('richieste-eliminazione/<int:pk>/', RichiestaEliminazioneProfiloDetailView.as_view(), name='richiesta-eliminazione-detail'),
+    path('account-badge/', AccountBadgeView.as_view(), name='account-badge'),
+    path('notifiche-trasferimento/', NotificaTrasferimentoView.as_view(), name='notifiche-trasferimento'),
+    path('notifiche-trasferimento/<int:pk>/', NotificaTrasferimentoView.as_view(), name='notifica-trasferimento-detail'),
+]
