@@ -100,8 +100,8 @@ class UserListCreateView(generics.ListCreateAPIView):
         if livello_chi_crea not in ('admin', 'ho'):
             raise PermissionDenied('Solo Admin e HO possono creare utenti.')
         livello_nuovo = serializer.validated_data.get('livello_accesso', 'base')
-        if livello_chi_crea in ('admin', 'ho') and livello_nuovo not in ('area', 'base'):
-            raise ValidationError({'livello_accesso': 'Admin e HO possono creare solo profili Area Manager o Base.'})
+        if livello_chi_crea == 'ho' and livello_nuovo not in ('area', 'base'):
+            raise ValidationError({'livello_accesso': 'HO può creare solo profili Area Manager o Base.'})
         if not serializer.validated_data.get('store'):
             raise ValidationError({'store': 'Il workplace è obbligatorio.'})
         instance = serializer.save()
@@ -125,8 +125,8 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         from rest_framework.exceptions import ValidationError
         livello_chi_modifica = self.request.user.livello_accesso
         nuovo_livello = serializer.validated_data.get('livello_accesso')
-        if nuovo_livello and livello_chi_modifica in ('admin', 'ho') and nuovo_livello not in ('area', 'base'):
-            raise ValidationError({'livello_accesso': 'Admin e HO possono assegnare solo livelli Area Manager o Base.'})
+        if nuovo_livello and livello_chi_modifica == 'ho' and nuovo_livello not in ('area', 'base'):
+            raise ValidationError({'livello_accesso': 'HO può assegnare solo livelli Area Manager o Base.'})
         if 'store' in serializer.validated_data and not serializer.validated_data.get('store'):
             raise ValidationError({'store': 'Il workplace è obbligatorio.'})
 
@@ -528,8 +528,17 @@ class StatsView(APIView):
     permission_classes = [IsAdminOrHOOrArea]
 
     def get(self, request):
+        import hashlib, json
+        from django.core.cache import cache
+        params = dict(request.query_params)
+        cache_key = 'stats_' + hashlib.md5(json.dumps(sorted(params.items())).encode()).hexdigest()
+        cached = cache.get(cache_key)
+        if cached:
+            return Response(cached)
         result, totale = _compute_stats(request.query_params)
-        return Response({'totale': totale, 'per_attivita': result})
+        payload = {'totale': totale, 'per_attivita': result}
+        cache.set(cache_key, payload, timeout=3600)
+        return Response(payload)
 
 
 class StatsExportView(APIView):
