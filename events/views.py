@@ -104,7 +104,9 @@ class NotificaEventoView(APIView):
     def get(self, request):
         if request.user.livello_accesso not in ('store', 'ho', 'admin'):
             return Response([])
-        qs = NotificaEvento.objects.exclude(letta_da=request.user).order_by('created_at')
+        qs = NotificaEvento.objects.exclude(letta_da=request.user).filter(
+            created_at__gt=request.user.created_at
+        ).order_by('created_at')
         return Response([
             {
                 'id': n.id,

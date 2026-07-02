@@ -825,6 +825,7 @@ class NotificaTrasferimentoView(APIView):
         qs = NotificaTrasferimento.objects.filter(
             store_destinazione=request.user.store,
             letta=False,
+            created_at__gt=request.user.created_at,
         ).order_by('created_at')
         data = [
             {
