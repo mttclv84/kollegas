@@ -68,6 +68,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     negozi_abilitati = models.ManyToManyField(
         'stores.Store', blank=True, related_name='fornitori_ehs_abilitati'
     )
+    telefono = models.CharField(max_length=30, blank=True)
+    indirizzo = models.CharField(max_length=300, blank=True)
     foto = models.ImageField(upload_to='foto_utenti/', null=True, blank=True)
     commento_mapping = models.TextField(blank=True)
     long_absence = models.BooleanField(default=False)
@@ -92,7 +94,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     @property
     def nome_completo(self):
-        return f'{self.cognome} {self.nome}'
+        return f'{self.cognome} {self.nome}'.strip()
 
     @property
     def is_admin(self):

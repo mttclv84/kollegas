@@ -16,4 +16,6 @@ urlpatterns = [
     path('ehs/calendario/', views.EHSCalendarioView.as_view(), name='ehs-calendario'),
     path('ehs/notifiche-scadenza/', views.EHSNotificaScadenzaView.as_view(), name='ehs-notifiche-scadenza'),
     path('ehs/notifiche-scadenza/<int:pk>/', views.EHSNotificaScadenzaView.as_view(), name='ehs-notifica-scadenza-detail'),
+    path('ehs/fornitori/', views.EHSFornitoreListCreateView.as_view(), name='ehs-fornitore-list'),
+    path('ehs/fornitori/<int:pk>/', views.EHSFornitoreDetailView.as_view(), name='ehs-fornitore-detail'),
 ]

@@ -1,8 +1,25 @@
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from events.models import Evento
 
 from .models import EHSCorso, EHSPartecipante, EHSSessione, EHSSessioneLog
+
+User = get_user_model()
+
+
+class EHSFornitoreSerializer(serializers.ModelSerializer):
+    """Anagrafica dei fornitori EHS (utenti livello 'fornitore'): NOME AZIENDA,
+    NOME DI RIFERIMENTO, email, indirizzo, telefono — livello fisso, non esposto
+    come editabile qui (impostato lato view alla creazione)."""
+    nome_completo = serializers.ReadOnlyField()
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'fornitore_ragione_sociale', 'cognome', 'nome', 'nome_completo',
+            'email', 'telefono', 'indirizzo', 'is_active',
+        ]
 
 
 class EHSCorsoSerializer(serializers.ModelSerializer):

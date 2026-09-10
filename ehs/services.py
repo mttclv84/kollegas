@@ -25,21 +25,26 @@ def _log(sessione, stato_precedente, stato_nuovo, utente, nota=''):
     )
 
 
-def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_negozio_telefono, note=''):
+def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_negozio_telefono, note='', fornitore=None):
     if store_user.livello_accesso not in RUOLI_STORE:
         raise TransizioneNonValida('Solo uno Store (o Admin/HO) può creare una richiesta EHS.')
+    if fornitore is not None and fornitore.livello_accesso != 'fornitore':
+        raise TransizioneNonValida('Il fornitore selezionato non è un utente di livello Fornitore EHS.')
 
     from .models import EHSSessione
 
     with transaction.atomic():
         sessione = EHSSessione.objects.create(
-            corso=corso, negozio=negozio, creata_da=store_user,
+            corso=corso, negozio=negozio, creata_da=store_user, fornitore=fornitore,
             durata_ore=corso.durata_ore,
             contatto_negozio_nome=contatto_negozio_nome,
             contatto_negozio_telefono=contatto_negozio_telefono,
             note=note,
         )
-        _log(sessione, '', sessione.stato, store_user, 'Richiesta creata dallo store')
+        nota = 'Richiesta creata dallo store'
+        if fornitore:
+            nota += f' — assegnata a {fornitore.fornitore_ragione_sociale or fornitore.nome_completo}'
+        _log(sessione, '', sessione.stato, store_user, nota)
     return sessione
 
 

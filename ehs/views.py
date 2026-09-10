@@ -10,15 +10,22 @@ from rest_framework.views import APIView
 from events.models import Evento
 from stores.models import Store
 
+from django.contrib.auth import get_user_model
+
+from users.permissions import IsAdminOrHO
+
 from . import services
 from .models import EHSCorso, EHSNotificaScadenza, EHSSessione
 from .serializers import (
     EHSCalendarioEventoSerializer,
     EHSCorsoSerializer,
+    EHSFornitoreSerializer,
     EHSSessioneDetailSerializer,
     EHSSessioneListSerializer,
 )
 from .services import TransizioneNonValida
+
+User = get_user_model()
 
 # Livelli con accesso alla sezione EHS (§4: la matrice permessi copre esplicitamente
 # solo STORE/FORNITORE/ADMIN; HO è incluso per coerenza con il resto di Kollegas,
@@ -96,8 +103,15 @@ class EHSSessioneListCreateView(APIView):
                 return Response({'detail': 'Negozio obbligatorio.'}, status=400)
             negozio = get_object_or_404(Store, pk=negozio_id)
 
+        fornitore = None
+        fornitore_id = request.data.get('fornitore')
+        if fornitore_id:
+            fornitore = get_object_or_404(User, pk=fornitore_id, livello_accesso='fornitore')
+
         try:
-            sessione = services.crea_richiesta(user, corso, negozio, contatto_nome, contatto_telefono, note)
+            sessione = services.crea_richiesta(
+                user, corso, negozio, contatto_nome, contatto_telefono, note, fornitore=fornitore
+            )
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=403)
         return Response(EHSSessioneDetailSerializer(sessione).data, status=201)
@@ -239,6 +253,76 @@ class EHSCalendarioView(APIView):
         if params.get('anno') and params.get('mese'):
             qs = qs.filter(data__year=params['anno'], data__month=params['mese'])
         return Response(EHSCalendarioEventoSerializer(qs.order_by('data', 'ora_inizio'), many=True).data)
+
+
+DEFAULT_FORNITORE_PASSWORD = 'Primark01!'
+
+
+class EHSFornitoreListCreateView(APIView):
+    """Anagrafica fornitori EHS: gestita solo da Admin/HO, ma leggibile anche da
+    Store/Fornitore (serve per il menù a tendina nella nuova richiesta)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.livello_accesso not in RUOLI_EHS:
+            return Response([])
+        qs = User.objects.filter(livello_accesso='fornitore')
+        if request.user.livello_accesso not in ('admin', 'ho'):
+            qs = qs.filter(is_active=True)
+        return Response(EHSFornitoreSerializer(qs.order_by('fornitore_ragione_sociale'), many=True).data)
+
+    def post(self, request):
+        if request.user.livello_accesso not in ('admin', 'ho'):
+            return Response({'detail': 'Solo Admin/HO possono creare fornitori EHS.'}, status=403)
+
+        email = (request.data.get('email') or '').strip().lower()
+        ragione_sociale = (request.data.get('fornitore_ragione_sociale') or '').strip()
+        nome = (request.data.get('nome') or '').strip()
+        if not email or not ragione_sociale or not nome:
+            return Response({'detail': 'Email, nome azienda e nome di riferimento sono obbligatori.'}, status=400)
+
+        if User.objects.filter(email=email).exists():
+            return Response({'detail': 'Email già in uso.'}, status=400)
+
+        fornitore = User.objects.create_user(
+            email=email, password=DEFAULT_FORNITORE_PASSWORD,
+            cognome=request.data.get('cognome', ''), nome=nome,
+            livello_accesso='fornitore',
+            fornitore_ragione_sociale=ragione_sociale,
+            telefono=(request.data.get('telefono') or '').strip(),
+            indirizzo=(request.data.get('indirizzo') or '').strip(),
+        )
+        fornitore.raw_password = DEFAULT_FORNITORE_PASSWORD
+        fornitore.save(update_fields=['raw_password'])
+        data = EHSFornitoreSerializer(fornitore).data
+        data['password_iniziale'] = DEFAULT_FORNITORE_PASSWORD
+        return Response(data, status=201)
+
+
+class EHSFornitoreDetailView(APIView):
+    permission_classes = [IsAdminOrHO]
+
+    def get_object(self, pk):
+        return get_object_or_404(User, pk=pk, livello_accesso='fornitore')
+
+    def patch(self, request, pk):
+        fornitore = self.get_object(pk)
+        for field in ('fornitore_ragione_sociale', 'cognome', 'nome', 'telefono', 'indirizzo'):
+            if field in request.data:
+                setattr(fornitore, field, (request.data.get(field) or '').strip())
+        if 'email' in request.data:
+            nuova_email = (request.data.get('email') or '').strip().lower()
+            if nuova_email and User.objects.exclude(pk=fornitore.pk).filter(email=nuova_email).exists():
+                return Response({'detail': 'Email già in uso.'}, status=400)
+            fornitore.email = nuova_email
+        fornitore.save()
+        return Response(EHSFornitoreSerializer(fornitore).data)
+
+    def delete(self, request, pk):
+        fornitore = self.get_object(pk)
+        fornitore.is_active = False
+        fornitore.save(update_fields=['is_active'])
+        return Response(status=204)
 
 
 class EHSNotificaScadenzaView(APIView):
