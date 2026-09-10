@@ -39,6 +39,7 @@ class EventoListSerializer(serializers.ModelSerializer):
             'location_store', 'location_esterna', 'location_display',
             'max_partecipanti', 'modalita_partecipazione',
             'iscritti_count', 'posti_disponibili',
+            'is_ehs',
         ]
 
     def get_iscritti_count(self, obj):

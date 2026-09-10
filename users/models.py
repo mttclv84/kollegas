@@ -38,6 +38,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         ('area', 'Area Manager'),
         ('store', 'Store'),
         ('base', 'Base'),
+        ('fornitore', 'Fornitore EHS'),
     ]
 
     SESSO_CHOICES = [
@@ -59,6 +60,13 @@ class User(AbstractBaseUser, PermissionsMixin):
     ruolo = models.ForeignKey(
         Role, null=True, blank=True, on_delete=models.SET_NULL,
         related_name='utenti'
+    )
+    # --- Campi specifici per utenze livello 'fornitore' (EHS) ---
+    fornitore_ragione_sociale = models.CharField(max_length=200, blank=True)
+    # Se vuoto, il fornitore vede tutti i negozi (default). Se valorizzato,
+    # la visibilità è ristretta ai soli negozi qui elencati.
+    negozi_abilitati = models.ManyToManyField(
+        'stores.Store', blank=True, related_name='fornitori_ehs_abilitati'
     )
     foto = models.ImageField(upload_to='foto_utenti/', null=True, blank=True)
     commento_mapping = models.TextField(blank=True)
@@ -101,6 +109,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_store(self):
         return self.livello_accesso == 'store'
+
+    @property
+    def is_fornitore(self):
+        return self.livello_accesso == 'fornitore'
 
 
 class PercorsoCrescita(models.Model):

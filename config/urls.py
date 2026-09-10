@@ -14,4 +14,5 @@ urlpatterns = [
     path('api/', include('stores.urls')),
     path('api/', include('events.urls')),
     path('api/', include('participants.urls')),
+    path('api/', include('ehs.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

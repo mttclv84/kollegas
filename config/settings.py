@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     'stores',
     'events',
     'participants',
+    'ehs',
     'django_filters',
 ]
 
@@ -124,3 +125,10 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
     r'^https://kollegas\.it$',
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# --- EHS ---
+# Destinatario fisso per la copia automatica degli attestati (§5bis). Nessun EMAIL_BACKEND
+# è configurato di proposito (vedi ricognizione step 1): finché non viene impostato un SMTP
+# reale via env var (EMAIL_HOST, ecc.), l'invio fallisce in modo innocuo e viene loggato,
+# senza bloccare la chiusura aula (vedi ehs/services.py: invia_email_attestato).
+EHS_EMAIL_ATTESTATI = os.getenv('EHS_EMAIL_ATTESTATI', 'vspampinato@primark.it')

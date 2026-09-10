@@ -90,6 +90,11 @@ class Evento(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # --- Sincronizzazione con la sezione EHS (record "leggero", vedi app ehs) ---
+    # Se True: tag/colore dedicato sul calendario principale, NON cliccabile.
+    is_ehs = models.BooleanField(default=False)
+    ehs_luogo = models.CharField(max_length=200, blank=True)
+
     class Meta:
         verbose_name = 'Evento'
         verbose_name_plural = 'Eventi'
