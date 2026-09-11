@@ -15,7 +15,7 @@ from .serializers import (
     AuditLogSerializer, RichiestaCreazionoProfiloSerializer,
     RichiestaEliminazioneProfiloSerializer,
 )
-from .permissions import IsAdmin, IsAdminOrHO, IsAdminOrHOOrArea, CanManageUsers, IsAdminOrHOEHS, IsAdminOrHOOrAreaEHS
+from .permissions import IsAdmin, IsAdminOrHO, IsAdminOrHOOrArea, CanManageUsers, IsAdminEHS, IsAdminOrHOEHS, IsAdminOrHOOrAreaEHS
 
 
 TIPO_LABEL_AUDIT = {
@@ -232,7 +232,7 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class DisattivatIListView(generics.ListAPIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAdminEHS]
     serializer_class = UserListSerializer
 
     def get_queryset(self):

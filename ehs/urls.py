@@ -28,5 +28,6 @@ urlpatterns = [
     path('ehs/fornitori/', views.EHSFornitoreListCreateView.as_view(), name='ehs-fornitore-list'),
     path('ehs/fornitori/<int:pk>/', views.EHSFornitoreDetailView.as_view(), name='ehs-fornitore-detail'),
     path('ehs/registri/', views.EHSRegistriView.as_view(), name='ehs-registri'),
+    path('ehs/registri/<int:pk>/', views.EHSRegistroDeleteView.as_view(), name='ehs-registro-delete'),
     path('ehs/registri/<int:pk>/file/', views.EHSRegistroFileView.as_view(), name='ehs-registro-file'),
 ]

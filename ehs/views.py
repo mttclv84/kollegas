@@ -15,7 +15,7 @@ from stores.models import Store
 
 from django.contrib.auth import get_user_model
 
-from users.permissions import IsAdminOrHOEHS
+from users.permissions import IsAdminEHS, IsAdminOrHOEHS
 
 from . import services
 from .models import (
@@ -601,6 +601,29 @@ class EHSRegistriView(APIView):
             }
             for s in qs.order_by('-data_confermata')
         ])
+
+
+class EHSRegistroDeleteView(APIView):
+    """DELETE /ehs/registri/<pk>/ — elimina definitivamente l'intera sessione EHS
+    completata (registro compilato, presenze, evento sul calendario collegato e
+    relative iscrizioni). Azione irreversibile, riservata ad Admin e Admin EHS:
+    richiede la conferma testuale esatta 'ELIMINARE DEFINITIVAMENTE' nel body."""
+    permission_classes = [IsAdminEHS]
+
+    def delete(self, request, pk):
+        sessione = get_object_or_404(EHSSessione, pk=pk, stato='COMPLETATA')
+        conferma = (request.data.get('conferma') or '').strip()
+        if conferma != 'ELIMINARE DEFINITIVAMENTE':
+            return Response({'detail': 'Conferma non valida.'}, status=400)
+
+        if sessione.registro_compilato_file:
+            sessione.registro_compilato_file.delete(save=False)
+        if sessione.calendario_evento_id:
+            from participants.models import Iscrizione
+            Iscrizione.objects.filter(evento_id=sessione.calendario_evento_id).delete()
+            sessione.calendario_evento.delete()
+        sessione.delete()
+        return Response(status=204)
 
 
 class EHSRegistroFileView(APIView):

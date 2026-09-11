@@ -170,7 +170,7 @@ class EccezioneCalendarioListCreateView(APIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [IsAuthenticated()]
-        return [IsAdminOrHOOrArea()]
+        return [IsAdminOrHOOrAreaEHS()]
 
     def get(self, request):
         qs = EccezioneCalendario.objects.all()
@@ -191,7 +191,7 @@ class EccezioneCalendarioListCreateView(APIView):
 
 
 class EccezioneCalendarioDetailView(APIView):
-    permission_classes = [IsAdminOrHOOrArea]
+    permission_classes = [IsAdminOrHOOrAreaEHS]
 
     def delete(self, request, pk):
         try:
