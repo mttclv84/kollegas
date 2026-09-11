@@ -153,13 +153,12 @@ class EHSSessioneListCreateView(APIView):
 
         corso_id = request.data.get('corso')
         contatto_nome = (request.data.get('contatto_negozio_nome') or '').strip()
-        contatto_telefono = (request.data.get('contatto_negozio_telefono') or '').strip()
         note = request.data.get('note', '')
         partecipanti_previsti = request.data.get('partecipanti_previsti') or None
         data_suggerita_store = _parse_data(request.data.get('data_suggerita_store'))
 
-        if not corso_id or not contatto_nome or not contatto_telefono:
-            return Response({'detail': 'Corso, contatto negozio e telefono sono obbligatori.'}, status=400)
+        if not corso_id or not contatto_nome:
+            return Response({'detail': 'Corso e contatto negozio sono obbligatori.'}, status=400)
 
         try:
             corso = EHSCorso.objects.select_related('fornitore').get(pk=corso_id, attivo=True)
@@ -188,7 +187,7 @@ class EHSSessioneListCreateView(APIView):
 
         try:
             sessione = services.crea_richiesta(
-                user, corso, negozio, contatto_nome, contatto_telefono, note, fornitore=fornitore,
+                user, corso, negozio, contatto_nome, '', note, fornitore=fornitore,
                 partecipanti_previsti=partecipanti_previsti, data_suggerita_store=data_suggerita_store,
             )
         except TransizioneNonValida as e:
@@ -504,13 +503,17 @@ class EHSNotificaDataPropostaView(APIView):
             return Response([])
         qs = EHSNotificaDataProposta.objects.filter(
             negozio_destinatario=user.store, letta=False
-        ).select_related('sessione__corso', 'sessione__negozio').order_by('creata_il')
+        ).select_related('sessione__corso', 'sessione__negozio', 'sessione__fornitore').order_by('creata_il')
         return Response([
             {
                 'id': n.id,
                 'sessione_id': n.sessione_id,
                 'corso_nome': n.sessione.corso.nome,
                 'negozio_nome': str(n.sessione.negozio),
+                'data_proposta': n.sessione.data_proposta,
+                'fornitore_nome': (
+                    n.sessione.fornitore.fornitore_ragione_sociale or n.sessione.fornitore.nome_completo
+                ) if n.sessione.fornitore else None,
             }
             for n in qs
         ])
