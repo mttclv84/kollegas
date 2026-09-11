@@ -10,8 +10,8 @@ from .models import EHSSessioneLog
 
 logger = logging.getLogger(__name__)
 
-RUOLI_FORNITORE = ('fornitore', 'admin', 'ho')
-RUOLI_STORE = ('store', 'admin', 'ho')
+RUOLI_FORNITORE = ('fornitore', 'admin', 'admin_ehs', 'ho')
+RUOLI_STORE = ('store', 'admin', 'admin_ehs', 'ho')
 
 
 class TransizioneNonValida(Exception):
@@ -113,7 +113,13 @@ def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telef
         sessione.save()
         _log(sessione, stato_precedente, sessione.stato, fornitore,
              f'Data proposta: {data_proposta} — docente: {docente_nome}')
+        _notifica_data_proposta(sessione)
     return sessione
+
+
+def _notifica_data_proposta(sessione):
+    from .models import EHSNotificaDataProposta
+    EHSNotificaDataProposta.objects.create(sessione=sessione, negozio_destinatario=sessione.negozio)
 
 
 def _crea_evento_calendario(sessione):
@@ -150,11 +156,12 @@ def _crea_evento_calendario(sessione):
     return evento
 
 
-def _conferma_sessione(sessione, utente, nota):
+def _conferma_sessione(sessione, utente, nota, notifica_lato='fornitore'):
     """Transizione condivisa verso CONFERMATA: fissa data_confermata, sincronizza il
-    calendario e notifica il fornitore (popup sulla sua home) — usata sia quando lo
-    store accetta la proposta, sia quando il fornitore accetta una contro-proposta."""
-    from .models import EHSNotificaSessioneConfermata
+    calendario e notifica chi non ha compiuto l'azione (popup sulla sua home) — usata
+    sia quando lo store accetta la proposta (notifica al fornitore), sia quando il
+    fornitore accetta una contro-proposta (notifica allo store)."""
+    from .models import EHSNotificaSessioneConfermata, EHSNotificaSessioneConfermataStore
 
     stato_precedente = sessione.stato
     sessione.data_confermata = sessione.data_proposta
@@ -162,7 +169,9 @@ def _conferma_sessione(sessione, utente, nota):
     sessione.save()
     _crea_evento_calendario(sessione)
     _log(sessione, stato_precedente, sessione.stato, utente, nota)
-    if sessione.fornitore:
+    if notifica_lato == 'store':
+        EHSNotificaSessioneConfermataStore.objects.create(sessione=sessione, negozio_destinatario=sessione.negozio)
+    elif sessione.fornitore:
         EHSNotificaSessioneConfermata.objects.create(sessione=sessione, fornitore=sessione.fornitore)
 
 
@@ -199,7 +208,8 @@ def accetta_controproposta(sessione, fornitore):
         raise TransizioneNonValida(f'Non è possibile accettare una contro-proposta dallo stato {sessione.stato}.')
 
     with transaction.atomic():
-        _conferma_sessione(sessione, fornitore, 'Fornitore ha accettato la contro-proposta: sessione confermata')
+        _conferma_sessione(sessione, fornitore, 'Fornitore ha accettato la contro-proposta: sessione confermata',
+                           notifica_lato='store')
     return sessione
 
 

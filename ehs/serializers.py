@@ -26,6 +26,9 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
     class Meta:
         model = EHSCorso
         fields = ['id', 'codice', 'nome', 'durata_ore', 'descrizione', 'attivo', 'scadenza_giorni']
+        # Il codice è generato automaticamente alla creazione (EHS + 4 cifre random) e
+        # non è mai modificabile da input client, né in creazione né in modifica.
+        extra_kwargs = {'codice': {'read_only': True}}
 
 
 class EHSPartecipanteSerializer(serializers.ModelSerializer):

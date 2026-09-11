@@ -34,6 +34,7 @@ class UserManager(BaseUserManager):
 class User(AbstractBaseUser, PermissionsMixin):
     LIVELLO_CHOICES = [
         ('admin', 'Admin'),
+        ('admin_ehs', 'Admin EHS'),
         ('ho', 'Head Office'),
         ('area', 'Area Manager'),
         ('store', 'Store'),

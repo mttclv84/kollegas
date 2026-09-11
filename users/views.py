@@ -15,7 +15,7 @@ from .serializers import (
     AuditLogSerializer, RichiestaCreazionoProfiloSerializer,
     RichiestaEliminazioneProfiloSerializer,
 )
-from .permissions import IsAdmin, IsAdminOrHO, IsAdminOrHOOrArea, CanManageUsers
+from .permissions import IsAdmin, IsAdminOrHO, IsAdminOrHOOrArea, CanManageUsers, IsAdminOrHOEHS, IsAdminOrHOOrAreaEHS
 
 
 TIPO_LABEL_AUDIT = {
@@ -256,7 +256,7 @@ class RoleDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class PercorsoCrescitaListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAdminOrHOOrArea]
+    permission_classes = [IsAdminOrHOOrAreaEHS]
     serializer_class = PercorsoCrescitaSerializer
 
     def get_queryset(self):
@@ -265,7 +265,7 @@ class PercorsoCrescitaListCreateView(generics.ListCreateAPIView):
 
 
 class PercorsoCrescitaDeleteView(APIView):
-    permission_classes = [IsAdminOrHOOrArea]
+    permission_classes = [IsAdminOrHOOrAreaEHS]
 
     def delete(self, request, pk):
         from datetime import timedelta
@@ -331,7 +331,7 @@ class PercorsoCrescitaDeleteView(APIView):
 
 
 class DevelopmentSearchView(APIView):
-    permission_classes = [IsAdminOrHOOrArea]
+    permission_classes = [IsAdminOrHOOrAreaEHS]
 
     def get(self, request):
         qs = User.objects.filter(is_active=True).select_related('store', 'ruolo')
@@ -354,7 +354,7 @@ class DevelopmentSearchView(APIView):
 
 
 class UserDevelopmentDetailView(APIView):
-    permission_classes = [IsAdminOrHOOrArea]
+    permission_classes = [IsAdminOrHOOrAreaEHS]
 
     def get(self, request, pk):
         try:
@@ -394,7 +394,7 @@ class UserDevelopmentDetailView(APIView):
 
 
 class AuditLogListView(generics.ListAPIView):
-    permission_classes = [IsAdminOrHO]
+    permission_classes = [IsAdminOrHOEHS]
     serializer_class = AuditLogSerializer
     pagination_class = None
 
@@ -525,7 +525,7 @@ def _compute_stats(query_params):
 
 class StatsView(APIView):
     """GET /stats/ — consuntivi attività per admin/HO/area."""
-    permission_classes = [IsAdminOrHOOrArea]
+    permission_classes = [IsAdminOrHOOrAreaEHS]
 
     def get(self, request):
         import hashlib, json
@@ -543,7 +543,7 @@ class StatsView(APIView):
 
 class StatsExportView(APIView):
     """GET /stats/export/ — scarica Excel con i consuntivi."""
-    permission_classes = [IsAdminOrHOOrArea]
+    permission_classes = [IsAdminOrHOOrAreaEHS]
 
     def get(self, request):
         import openpyxl

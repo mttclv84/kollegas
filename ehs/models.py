@@ -173,6 +173,39 @@ class EHSNotificaSessioneConfermata(models.Model):
         return f'Conferma {self.sessione} — {self.fornitore}'
 
 
+class EHSNotificaDataProposta(models.Model):
+    """Popup sulla home dello store quando il fornitore propone (o ripropone) una data."""
+    sessione = models.ForeignKey(EHSSessione, on_delete=models.CASCADE, related_name='notifiche_data_proposta')
+    negozio_destinatario = models.ForeignKey('stores.Store', on_delete=models.CASCADE, related_name='ehs_notifiche_data_proposta')
+    creata_il = models.DateTimeField(auto_now_add=True)
+    letta = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Notifica Data Proposta EHS'
+        verbose_name_plural = 'Notifiche Data Proposta EHS'
+        ordering = ['-creata_il']
+
+    def __str__(self):
+        return f'Data proposta {self.sessione} — {self.negozio_destinatario}'
+
+
+class EHSNotificaSessioneConfermataStore(models.Model):
+    """Popup sulla home dello store quando una sua sessione viene confermata
+    dall'accettazione del fornitore (contro-proposta accettata)."""
+    sessione = models.ForeignKey(EHSSessione, on_delete=models.CASCADE, related_name='notifiche_conferma_store')
+    negozio_destinatario = models.ForeignKey('stores.Store', on_delete=models.CASCADE, related_name='ehs_notifiche_conferma_store')
+    creata_il = models.DateTimeField(auto_now_add=True)
+    letta = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Notifica Conferma Sessione EHS (Store)'
+        verbose_name_plural = 'Notifiche Conferma Sessione EHS (Store)'
+        ordering = ['-creata_il']
+
+    def __str__(self):
+        return f'Conferma {self.sessione} — {self.negozio_destinatario}'
+
+
 class EHSNotificaNuovaRichiesta(models.Model):
     """Popup + pallino sulla home del fornitore quando gli viene assegnata una
     nuova richiesta (alla creazione o tramite assegnazione successiva)."""

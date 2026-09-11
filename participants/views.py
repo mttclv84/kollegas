@@ -7,7 +7,7 @@ from django.db.models import Prefetch
 from django.utils import timezone
 from .models import Iscrizione, RichiestaCancellazione
 from .serializers import IscrizioneSerializer, RichiestaCancellazioneSerializer
-from users.permissions import IsAdminOrHO, IsAdminOrHOOrArea, CanManageUsers
+from users.permissions import IsAdminOrHO, IsAdminOrHOOrArea, CanManageUsers, IsAdminOrHOOrAreaEHS
 
 GIORNI_BLOCCO = 20
 
@@ -82,7 +82,7 @@ class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 class DeleteAssentiView(APIView):
     """DELETE /iscrizioni/assenti/ — rimuove tutte le iscrizioni con stato='assente'."""
-    permission_classes = [IsAdminOrHOOrArea]
+    permission_classes = [IsAdminOrHOOrAreaEHS]
 
     def delete(self, request):
         user = request.user
@@ -96,7 +96,7 @@ class DeleteAssentiView(APIView):
             qs = qs.filter(evento__data__lte=params['data_a'])
         if params.get('ruolo'):
             qs = qs.filter(user__ruolo_id=params['ruolo'])
-        if params.get('store') and user.livello_accesso in ('admin', 'ho', 'area'):
+        if params.get('store') and user.livello_accesso in ('admin', 'admin_ehs', 'ho', 'area'):
             qs = qs.filter(user__store_id=params['store'])
         count, _ = qs.delete()
         return Response({'eliminati': count})
@@ -125,7 +125,7 @@ class ReportView(APIView):
             qs = qs.filter(evento__data__lte=params['data_a'])
         if params.get('ruolo'):
             qs = qs.filter(user__ruolo_id=params['ruolo'])
-        if params.get('store') and user.livello_accesso in ('admin', 'ho', 'area'):
+        if params.get('store') and user.livello_accesso in ('admin', 'admin_ehs', 'ho', 'area'):
             qs = qs.filter(user__store_id=params['store'])
 
         serializer = IscrizioneSerializer(qs.order_by('-evento__data'), many=True)

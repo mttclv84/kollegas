@@ -1,3 +1,5 @@
+import random
+
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -13,14 +15,16 @@ from stores.models import Store
 
 from django.contrib.auth import get_user_model
 
-from users.permissions import IsAdminOrHO
+from users.permissions import IsAdminOrHOEHS
 
 from . import services
 from .models import (
     EHSCorso,
+    EHSNotificaDataProposta,
     EHSNotificaNuovaRichiesta,
     EHSNotificaScadenza,
     EHSNotificaSessioneConfermata,
+    EHSNotificaSessioneConfermataStore,
     EHSSessione,
 )
 from .serializers import (
@@ -37,7 +41,7 @@ User = get_user_model()
 # Livelli con accesso alla sezione EHS (§4: la matrice permessi copre esplicitamente
 # solo STORE/FORNITORE/ADMIN; HO è incluso per coerenza con il resto di Kollegas,
 # dove è trattato quasi ovunque come equivalente ad ADMIN — vedi step 3).
-RUOLI_EHS = ('store', 'fornitore', 'admin', 'ho')
+RUOLI_EHS = ('store', 'fornitore', 'admin', 'admin_ehs', 'ho')
 
 
 def _parse_data(value):
@@ -45,6 +49,15 @@ def _parse_data(value):
         return None
     dt = parse_datetime(value)
     return dt
+
+
+def _genera_codice_corso():
+    """Codice EHS + 4 cifre random, univoco. Il numero di combinazioni (10000) rende
+    la collisione rara: si ritenta finché non se ne trova una libera."""
+    while True:
+        codice = f'EHS{random.randint(0, 9999):04d}'
+        if not EHSCorso.objects.filter(codice=codice).exists():
+            return codice
 
 
 class EHSCorsoListCreateView(generics.ListCreateAPIView):
@@ -57,22 +70,25 @@ class EHSCorsoListCreateView(generics.ListCreateAPIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [IsAuthenticated()]
-        return [IsAdminOrHO()]
+        return [IsAdminOrHOEHS()]
 
     def get_queryset(self):
         user = self.request.user
         if user.livello_accesso not in RUOLI_EHS:
             return EHSCorso.objects.none()
         qs = EHSCorso.objects.all().order_by('nome')
-        if user.livello_accesso not in ('admin', 'ho'):
+        if user.livello_accesso not in ('admin', 'admin_ehs', 'ho'):
             qs = qs.filter(attivo=True)
         return qs
+
+    def perform_create(self, serializer):
+        serializer.save(codice=_genera_codice_corso())
 
 
 class EHSCorsoDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = EHSCorsoSerializer
     queryset = EHSCorso.objects.all()
-    permission_classes = [IsAdminOrHO]
+    permission_classes = [IsAdminOrHOEHS]
 
     def perform_destroy(self, instance):
         # Non elimina fisicamente: potrebbe essere referenziato da sessioni storiche.
@@ -104,7 +120,7 @@ class EHSSessioneListCreateView(APIView):
 
     def post(self, request):
         user = request.user
-        if user.livello_accesso not in ('store', 'admin', 'ho'):
+        if user.livello_accesso not in ('store', 'admin', 'admin_ehs', 'ho'):
             return Response({'detail': 'Non autorizzato.'}, status=403)
 
         corso_id = request.data.get('corso')
@@ -155,7 +171,7 @@ class BaseEHSSessioneActionView(APIView):
     def get_sessione_visibile(self, request, pk):
         user = request.user
         qs = EHSSessioneListCreateView().get_queryset_per_ruolo(user)
-        if user.livello_accesso in ('admin', 'ho'):
+        if user.livello_accesso in ('admin', 'admin_ehs', 'ho'):
             qs = EHSSessione.objects.select_related('corso', 'negozio', 'fornitore', 'creata_da')
         return get_object_or_404(qs, pk=pk)
 
@@ -286,12 +302,12 @@ class EHSFornitoreListCreateView(APIView):
         if request.user.livello_accesso not in RUOLI_EHS:
             return Response([])
         qs = User.objects.filter(livello_accesso='fornitore')
-        if request.user.livello_accesso not in ('admin', 'ho'):
+        if request.user.livello_accesso not in ('admin', 'admin_ehs', 'ho'):
             qs = qs.filter(is_active=True)
         return Response(EHSFornitoreSerializer(qs.order_by('fornitore_ragione_sociale'), many=True).data)
 
     def post(self, request):
-        if request.user.livello_accesso not in ('admin', 'ho'):
+        if request.user.livello_accesso not in ('admin', 'admin_ehs', 'ho'):
             return Response({'detail': 'Solo Admin/HO possono creare fornitori EHS.'}, status=403)
 
         email = (request.data.get('email') or '').strip().lower()
@@ -324,7 +340,7 @@ class EHSFornitoreListCreateView(APIView):
 
 
 class EHSFornitoreDetailView(APIView):
-    permission_classes = [IsAdminOrHO]
+    permission_classes = [IsAdminOrHOEHS]
 
     def get_object(self, pk):
         return get_object_or_404(User, pk=pk, livello_accesso='fornitore')
@@ -413,6 +429,69 @@ class EHSNotificaSessioneConfermataView(APIView):
         return Response({'ok': True})
 
 
+class EHSNotificaSessioneConfermataStoreView(APIView):
+    """Popup sulla home dello store quando una sua sessione viene confermata
+    dall'accettazione del fornitore (contro-proposta accettata)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.livello_accesso != 'store' or not user.store_id:
+            return Response([])
+        qs = EHSNotificaSessioneConfermataStore.objects.filter(
+            negozio_destinatario=user.store, letta=False
+        ).select_related('sessione__corso', 'sessione__negozio').order_by('creata_il')
+        return Response([
+            {
+                'id': n.id,
+                'corso_nome': n.sessione.corso.nome,
+                'negozio_nome': str(n.sessione.negozio),
+                'data_confermata': n.sessione.data_confermata,
+            }
+            for n in qs
+        ])
+
+    def patch(self, request, pk):
+        try:
+            n = EHSNotificaSessioneConfermataStore.objects.get(pk=pk, negozio_destinatario=request.user.store)
+        except EHSNotificaSessioneConfermataStore.DoesNotExist:
+            return Response(status=404)
+        n.letta = True
+        n.save(update_fields=['letta'])
+        return Response({'ok': True})
+
+
+class EHSNotificaDataPropostaView(APIView):
+    """Popup sulla home dello store quando il fornitore propone (o ripropone) una data."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.livello_accesso != 'store' or not user.store_id:
+            return Response([])
+        qs = EHSNotificaDataProposta.objects.filter(
+            negozio_destinatario=user.store, letta=False
+        ).select_related('sessione__corso', 'sessione__negozio').order_by('creata_il')
+        return Response([
+            {
+                'id': n.id,
+                'sessione_id': n.sessione_id,
+                'corso_nome': n.sessione.corso.nome,
+                'negozio_nome': str(n.sessione.negozio),
+            }
+            for n in qs
+        ])
+
+    def patch(self, request, pk):
+        try:
+            n = EHSNotificaDataProposta.objects.get(pk=pk, negozio_destinatario=request.user.store)
+        except EHSNotificaDataProposta.DoesNotExist:
+            return Response(status=404)
+        n.letta = True
+        n.save(update_fields=['letta'])
+        return Response({'ok': True})
+
+
 class EHSNotificaNuovaRichiestaView(APIView):
     """Popup + pallino sulla home del fornitore quando gli arriva una nuova richiesta."""
     permission_classes = [IsAuthenticated]
@@ -463,7 +542,7 @@ class EHSRegistriView(APIView):
             qs = qs.filter(negozio=user.store)
         elif user.livello_accesso == 'fornitore':
             qs = qs.filter(fornitore=user)
-        elif user.livello_accesso in ('admin', 'ho'):
+        elif user.livello_accesso in ('admin', 'admin_ehs', 'ho'):
             params = request.query_params
             if params.get('negozio'):
                 qs = qs.filter(negozio_id=params['negozio'])
@@ -499,7 +578,7 @@ class EHSRegistroFileView(APIView):
     def get(self, request, pk):
         user = request.user
         sessione = get_object_or_404(EHSSessione, pk=pk, stato='COMPLETATA')
-        autorizzato = user.livello_accesso in ('admin', 'ho') or (
+        autorizzato = user.livello_accesso in ('admin', 'admin_ehs', 'ho') or (
             user.livello_accesso == 'store' and sessione.negozio_id == user.store_id
         ) or (user.livello_accesso == 'fornitore' and sessione.fornitore_id == user.id)
         if not autorizzato or not sessione.registro_compilato_file:

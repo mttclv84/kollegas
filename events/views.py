@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from rest_framework import serializers as drf_serializers
 from .models import Host, AttivitaCatalogo, Evento, EccezioneCalendario, NotificaEvento
 from .serializers import HostSerializer, AttivitaCatalogoSerializer, EventoListSerializer, EventoDetailSerializer
-from users.permissions import IsAdminOrHO, IsAdminOrHOOrArea
+from users.permissions import IsAdminOrHO, IsAdminOrHOOrArea, IsAdminOrHOOrAreaEHS
 
 
 class HostListCreateView(generics.ListCreateAPIView):
@@ -82,13 +82,13 @@ class EventoListCreateView(generics.ListCreateAPIView):
 
     def get_permissions(self):
         if self.request.method == 'POST':
-            return [IsAdminOrHOOrArea()]
+            return [IsAdminOrHOOrAreaEHS()]
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
         super().perform_create(serializer)
         actor = self.request.user
-        if actor.livello_accesso in ('admin', 'ho'):
+        if actor.livello_accesso in ('admin', 'admin_ehs', 'ho'):
             evento = serializer.instance
             location = evento.location_store.nome if evento.location_store else evento.location_esterna or '—'
             notifica = NotificaEvento.objects.create(
@@ -104,7 +104,7 @@ class NotificaEventoView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if request.user.livello_accesso not in ('store', 'ho', 'admin'):
+        if request.user.livello_accesso not in ('store', 'ho', 'admin', 'admin_ehs'):
             return Response([])
         qs = NotificaEvento.objects.exclude(letta_da=request.user).filter(
             created_at__gt=request.user.created_at
@@ -138,7 +138,7 @@ class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [IsAuthenticated()]
-        return [IsAdminOrHOOrArea()]
+        return [IsAdminOrHOOrAreaEHS()]
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
