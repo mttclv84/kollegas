@@ -21,13 +21,16 @@ class EHSCorso(models.Model):
 
 
 class EHSSessione(models.Model):
+    # NB: la sessione diventa CONFERMATA nel momento in cui lo store accetta la
+    # data proposta dal fornitore (o il fornitore accetta una contro-proposta):
+    # a quel punto l'aula è fissata, appare sul calendario EHS e non serve più
+    # un passaggio separato di "conferma". La chiusura (marcatura presenze +
+    # upload registro compilato) avviene direttamente da CONFERMATA.
     STATO_CHOICES = [
         ('RICHIESTA_INVIATA', 'Richiesta inviata dallo store'),
         ('DATA_PROPOSTA', 'Data proposta dal fornitore'),
         ('DATA_CONTROPROPOSTA', 'Nuova data proposta dallo store'),
-        ('CONFERMATA', 'Data confermata, docente assegnato'),
-        ('REGISTRO_INVIATO', 'Registro inviato al negozio'),
-        ('SVOLTA', 'Sessione svolta, registro compilato ricevuto'),
+        ('CONFERMATA', 'Confermata'),
         ('COMPLETATA', 'Completata'),
         ('ANNULLATA', 'Annullata'),
     ]
@@ -54,6 +57,13 @@ class EHSSessione(models.Model):
 
     contatto_negozio_nome = models.CharField(max_length=200)
     contatto_negozio_telefono = models.CharField(max_length=30)  # tipicamente cell. P&C
+
+    # Numero di partecipanti previsti, indicativo, inserito dallo store in fase
+    # di richiesta (non vincolante sugli iscritti reali).
+    partecipanti_previsti = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Data facoltativa suggerita dallo store al momento della richiesta, visibile
+    # al fornitore come riferimento — non è la data ufficiale (quella è data_proposta).
+    data_suggerita_store = models.DateTimeField(null=True, blank=True)
 
     registro_file = models.FileField(upload_to='ehs/registri/', null=True, blank=True)
     registro_compilato_file = models.FileField(upload_to='ehs/registri_compilati/', null=True, blank=True)
@@ -145,3 +155,19 @@ class EHSNotificaScadenza(models.Model):
 
     def __str__(self):
         return f'Scadenza {self.partecipante} — {self.negozio_destinatario}'
+
+
+class EHSNotificaSessioneConfermata(models.Model):
+    """Popup sulla home del fornitore quando una sua sessione passa a CONFERMATA."""
+    sessione = models.ForeignKey(EHSSessione, on_delete=models.CASCADE, related_name='notifiche_conferma')
+    fornitore = models.ForeignKey('users.User', on_delete=models.CASCADE, related_name='ehs_notifiche_conferma')
+    creata_il = models.DateTimeField(auto_now_add=True)
+    letta = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Notifica Conferma Sessione EHS'
+        verbose_name_plural = 'Notifiche Conferma Sessione EHS'
+        ordering = ['-creata_il']
+
+    def __str__(self):
+        return f'Conferma {self.sessione} — {self.fornitore}'

@@ -25,11 +25,19 @@ def _log(sessione, stato_precedente, stato_nuovo, utente, nota=''):
     )
 
 
-def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_negozio_telefono, note='', fornitore=None):
+def _valida_mezzora(dt, campo='data'):
+    """Gli orari EHS sono sempre a 00 o 30 minuti, per calcolare ore intere o mezz'ore."""
+    if dt is not None and dt.minute not in (0, 30):
+        raise TransizioneNonValida(f'{campo}: l\'orario deve essere in punto o e mezza (es. 14:00 o 14:30).')
+
+
+def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_negozio_telefono,
+                    note='', fornitore=None, partecipanti_previsti=None, data_suggerita_store=None):
     if store_user.livello_accesso not in RUOLI_STORE:
         raise TransizioneNonValida('Solo uno Store (o Admin/HO) può creare una richiesta EHS.')
     if fornitore is not None and fornitore.livello_accesso != 'fornitore':
         raise TransizioneNonValida('Il fornitore selezionato non è un utente di livello Fornitore EHS.')
+    _valida_mezzora(data_suggerita_store, 'Data suggerita')
 
     from .models import EHSSessione
 
@@ -40,6 +48,8 @@ def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_n
             contatto_negozio_nome=contatto_negozio_nome,
             contatto_negozio_telefono=contatto_negozio_telefono,
             note=note,
+            partecipanti_previsti=partecipanti_previsti,
+            data_suggerita_store=data_suggerita_store,
         )
         nota = 'Richiesta creata dallo store'
         if fornitore:
@@ -48,42 +58,28 @@ def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_n
     return sessione
 
 
-def proponi_data(sessione, fornitore, data_proposta):
+def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telefono):
+    """Il fornitore propone data e docente insieme, sia alla prima proposta sia dopo
+    aver rifiutato una contro-proposta (§3: il ciclo può ripetersi finché non si arriva
+    a CONFERMATA tramite l'accettazione di una delle due parti)."""
     if fornitore.livello_accesso not in RUOLI_FORNITORE:
         raise TransizioneNonValida('Solo il Fornitore (o Admin/HO) può proporre una data.')
     if sessione.stato not in ('RICHIESTA_INVIATA', 'DATA_CONTROPROPOSTA'):
         raise TransizioneNonValida(f'Non è possibile proporre una data dallo stato {sessione.stato}.')
+    if not docente_nome or not docente_telefono:
+        raise TransizioneNonValida('Nome e telefono del docente sono obbligatori.')
+    _valida_mezzora(data_proposta, 'Data proposta')
 
     with transaction.atomic():
         stato_precedente = sessione.stato
         sessione.data_proposta = data_proposta
         sessione.fornitore = fornitore
+        sessione.docente_nome = docente_nome
+        sessione.docente_telefono = docente_telefono
         sessione.stato = 'DATA_PROPOSTA'
         sessione.save()
-        _log(sessione, stato_precedente, sessione.stato, fornitore, f'Data proposta: {data_proposta}')
-    return sessione
-
-
-def rispondi_data(sessione, store_user, accetta, nuova_data=None):
-    """Lo store accetta la data proposta (in attesa che il fornitore confermi con `conferma`)
-    oppure contro-propone una nuova data (torna al fornitore per una nuova proposta)."""
-    if store_user.livello_accesso not in RUOLI_STORE:
-        raise TransizioneNonValida('Solo lo Store (o Admin/HO) può rispondere alla data proposta.')
-    if sessione.stato != 'DATA_PROPOSTA':
-        raise TransizioneNonValida(f'Non è possibile rispondere a una data dallo stato {sessione.stato}.')
-
-    with transaction.atomic():
-        stato_precedente = sessione.stato
-        if accetta:
-            _log(sessione, stato_precedente, sessione.stato, store_user,
-                 'Store ha accettato la data proposta, in attesa di conferma del fornitore')
-        else:
-            if not nuova_data:
-                raise TransizioneNonValida('Serve una nuova data per la contro-proposta.')
-            sessione.data_proposta = nuova_data
-            sessione.stato = 'DATA_CONTROPROPOSTA'
-            sessione.save()
-            _log(sessione, stato_precedente, sessione.stato, store_user, f'Contro-proposta: {nuova_data}')
+        _log(sessione, stato_precedente, sessione.stato, fornitore,
+             f'Data proposta: {data_proposta} — docente: {docente_nome}')
     return sessione
 
 
@@ -92,8 +88,6 @@ def _crea_evento_calendario(sessione):
     Titolo fisso 'EHS' (nessun dettaglio su fornitore/docente/corso visibile fuori da EHS):
     riusa un'Attività Catalogo e un Host fissi, dedicati, così da non toccare i vincoli
     esistenti su Evento.attivita/Evento.host (entrambi FK obbligatorie, vedi ricognizione step 1)."""
-    from datetime import timedelta
-
     from events.models import AttivitaCatalogo, Evento, Host, TipologiaAttivita
 
     host, _ = Host.objects.get_or_create(
@@ -122,104 +116,102 @@ def _crea_evento_calendario(sessione):
     return evento
 
 
-def conferma(sessione, fornitore, docente_nome, docente_telefono):
-    """Conferma definitiva del fornitore: fissa la data e assegna il docente.
-    Valida sia dopo un'accettazione diretta (DATA_PROPOSTA) sia dopo una contro-proposta
-    accettata dal fornitore (DATA_CONTROPROPOSTA) — coerente con §3, dove entrambi gli
-    archi confluiscono in CONFERMATA. Alla conferma, sincronizza il calendario principale (§5)."""
-    if fornitore.livello_accesso not in RUOLI_FORNITORE:
-        raise TransizioneNonValida('Solo il Fornitore (o Admin/HO) può confermare la sessione.')
-    if sessione.stato not in ('DATA_PROPOSTA', 'DATA_CONTROPROPOSTA'):
-        raise TransizioneNonValida(f'Non è possibile confermare dallo stato {sessione.stato}.')
-    if not sessione.data_proposta:
-        raise TransizioneNonValida('Nessuna data proposta da confermare.')
+def _conferma_sessione(sessione, utente, nota):
+    """Transizione condivisa verso CONFERMATA: fissa data_confermata, sincronizza il
+    calendario e notifica il fornitore (popup sulla sua home) — usata sia quando lo
+    store accetta la proposta, sia quando il fornitore accetta una contro-proposta."""
+    from .models import EHSNotificaSessioneConfermata
+
+    stato_precedente = sessione.stato
+    sessione.data_confermata = sessione.data_proposta
+    sessione.stato = 'CONFERMATA'
+    sessione.save()
+    _crea_evento_calendario(sessione)
+    _log(sessione, stato_precedente, sessione.stato, utente, nota)
+    if sessione.fornitore:
+        EHSNotificaSessioneConfermata.objects.create(sessione=sessione, fornitore=sessione.fornitore)
+
+
+def rispondi_data(sessione, store_user, accetta, nuova_data=None):
+    """Lo store accetta la data proposta (la sessione diventa CONFERMATA subito,
+    l'aula appare sul calendario EHS e il fornitore riceve un popup di notifica)
+    oppure contro-propone una nuova data (torna al fornitore per una nuova proposta)."""
+    if store_user.livello_accesso not in RUOLI_STORE:
+        raise TransizioneNonValida('Solo lo Store (o Admin/HO) può rispondere alla data proposta.')
+    if sessione.stato != 'DATA_PROPOSTA':
+        raise TransizioneNonValida(f'Non è possibile rispondere a una data dallo stato {sessione.stato}.')
 
     with transaction.atomic():
-        stato_precedente = sessione.stato
-        sessione.data_confermata = sessione.data_proposta
-        sessione.docente_nome = docente_nome
-        sessione.docente_telefono = docente_telefono
-        sessione.fornitore = fornitore
-        sessione.stato = 'CONFERMATA'
-        sessione.save()
-        _crea_evento_calendario(sessione)
-        _log(sessione, stato_precedente, sessione.stato, fornitore,
-             f'Sessione confermata — docente: {docente_nome}')
+        if accetta:
+            _conferma_sessione(sessione, store_user, 'Store ha accettato la data proposta: sessione confermata')
+        else:
+            if not nuova_data:
+                raise TransizioneNonValida('Serve una nuova data per la contro-proposta.')
+            _valida_mezzora(nuova_data, 'Nuova data')
+            stato_precedente = sessione.stato
+            sessione.data_proposta = nuova_data
+            sessione.stato = 'DATA_CONTROPROPOSTA'
+            sessione.save()
+            _log(sessione, stato_precedente, sessione.stato, store_user, f'Contro-proposta: {nuova_data}')
     return sessione
 
 
-def carica_registro(sessione, fornitore, file):
+def accetta_controproposta(sessione, fornitore):
+    """Il fornitore accetta la data contro-proposta dallo store così com'è: la sessione
+    diventa CONFERMATA (stessa transizione condivisa di rispondi_data(accetta=True))."""
     if fornitore.livello_accesso not in RUOLI_FORNITORE:
-        raise TransizioneNonValida('Solo il Fornitore (o Admin/HO) può caricare il registro.')
-    if sessione.stato != 'CONFERMATA':
-        raise TransizioneNonValida(f'Non è possibile caricare il registro dallo stato {sessione.stato}.')
+        raise TransizioneNonValida('Solo il Fornitore (o Admin/HO) può accettare la contro-proposta.')
+    if sessione.stato != 'DATA_CONTROPROPOSTA':
+        raise TransizioneNonValida(f'Non è possibile accettare una contro-proposta dallo stato {sessione.stato}.')
 
     with transaction.atomic():
-        stato_precedente = sessione.stato
-        sessione.registro_file = file
-        sessione.stato = 'REGISTRO_INVIATO'
-        sessione.save()
-        _log(sessione, stato_precedente, sessione.stato, fornitore, 'Registro inviato al negozio')
+        _conferma_sessione(sessione, fornitore, 'Fornitore ha accettato la contro-proposta: sessione confermata')
     return sessione
 
 
-def carica_registro_compilato(sessione, fornitore, file):
-    """Il registro compilato pre-aula è caricato dal fornitore esterno (non dallo store) —
-    il suo arrivo segna il passaggio a SVOLTA (vedi descrizione stato in §3)."""
-    if fornitore.livello_accesso not in RUOLI_FORNITORE:
-        raise TransizioneNonValida('Solo il Fornitore (o Admin/HO) può caricare il registro compilato.')
-    if sessione.stato != 'REGISTRO_INVIATO':
-        raise TransizioneNonValida(f'Non è possibile caricare il registro compilato dallo stato {sessione.stato}.')
-
-    with transaction.atomic():
-        stato_precedente = sessione.stato
-        sessione.registro_compilato_file = file
-        sessione.stato = 'SVOLTA'
-        sessione.save()
-        _log(sessione, stato_precedente, sessione.stato, fornitore, 'Registro compilato ricevuto: sessione svolta')
-    return sessione
-
-
-def invia_email_attestato(attestato_file, partecipante):
-    """Invio di sistema (non un'azione manuale del fornitore, §5bis punto 3).
-    Il destinatario di default è hardcoded come da spec; sovrascrivibile via
-    settings.EHS_EMAIL_ATTESTATI una volta configurato l'SMTP reale."""
+def invia_email_registro(sessione):
+    """Invio di sistema del registro compilato al momento della chiusura aula:
+    non è un'azione manuale del fornitore, lui carica solo in app."""
     destinatario = getattr(settings, 'EHS_EMAIL_ATTESTATI', 'vspampinato@primark.it')
     try:
         email = EmailMessage(
-            subject=f'Attestato EHS — {partecipante.sessione.corso.nome} — {partecipante.utente.nome_completo}',
+            subject=f'Registro EHS — {sessione.corso.nome} — {sessione.negozio}',
             body=(
-                f'Attestato di partecipazione al corso {partecipante.sessione.corso.nome} '
-                f'per {partecipante.utente.nome_completo} ({partecipante.sessione.negozio}).'
+                f'Registro compilato del corso {sessione.corso.nome} presso {sessione.negozio}, '
+                f'sessione del {sessione.data_confermata}.'
             ),
             to=[destinatario],
         )
-        attestato_file.open('rb')
+        sessione.registro_compilato_file.open('rb')
         try:
-            email.attach(attestato_file.name.rsplit('/', 1)[-1], attestato_file.read())
+            email.attach(sessione.registro_compilato_file.name.rsplit('/', 1)[-1], sessione.registro_compilato_file.read())
         finally:
-            attestato_file.close()
+            sessione.registro_compilato_file.close()
         email.send(fail_silently=False)
     except Exception:
         # SMTP non ancora configurato (vedi ricognizione step 1): l'invio è un
         # side-effect di notifica e non deve far fallire la chiusura aula.
-        logger.exception('Invio email attestato fallito per partecipante %s', partecipante.id)
+        logger.exception('Invio email registro fallito per sessione %s', sessione.id)
 
 
-def chiudi_aula(sessione, presenze, attestati, assenze_motivo, utente_fornitore):
-    """Azione unica del fornitore a fine sessione (§5bis): conferma presenze, carica
-    attestati, invia email di sistema, chiude formalmente e calcola le scadenze.
-    presenze: {partecipante_id: bool} — attestati: {partecipante_id: File} —
-    assenze_motivo: {partecipante_id: str}."""
+def chiudi_aula(sessione, presenze, registro_compilato_file, utente_fornitore, assenze_motivo=None):
+    """Azione unica del fornitore a fine sessione: conferma presenze, carica il
+    registro compilato (un solo documento per l'intera sessione, consultabile poi
+    dal negozio nella sezione Registri), invia email di sistema, chiude formalmente
+    e calcola le scadenze. presenze: {partecipante_id: bool}."""
+    assenze_motivo = assenze_motivo or {}
     if utente_fornitore.livello_accesso not in RUOLI_FORNITORE:
         raise TransizioneNonValida("Solo il Fornitore (o Admin/HO) può chiudere l'aula.")
-    if sessione.stato != 'SVOLTA':
+    if sessione.stato != 'CONFERMATA':
         raise TransizioneNonValida(f"Non è possibile chiudere l'aula dallo stato {sessione.stato}.")
+    if not registro_compilato_file:
+        raise TransizioneNonValida('Il registro compilato è obbligatorio per chiudere l\'aula.')
 
     with transaction.atomic():
         now = timezone.now()
         sessione.data_chiusura = now
         sessione.chiusa_da = utente_fornitore
+        sessione.registro_compilato_file = registro_compilato_file
         sessione.stato = 'COMPLETATA'
         sessione.save()
 
@@ -229,10 +221,6 @@ def chiudi_aula(sessione, presenze, attestati, assenze_motivo, utente_fornitore)
                 partecipante.completato = True
                 partecipante.completato_il = now
                 partecipante.assente_motivo = ''
-                pdf = attestati.get(partecipante.id)
-                if pdf:
-                    partecipante.attestato_file = pdf
-                    partecipante.attestato_caricato_il = now
                 if sessione.corso.scadenza_giorni:
                     partecipante.scadenza_formazione = now.date() + timedelta(days=sessione.corso.scadenza_giorni)
             else:
@@ -240,11 +228,10 @@ def chiudi_aula(sessione, presenze, attestati, assenze_motivo, utente_fornitore)
                 partecipante.assente_motivo = assenze_motivo.get(partecipante.id, '')
             partecipante.save()
 
-            if partecipante.presente and partecipante.attestato_file:
-                invia_email_attestato(partecipante.attestato_file, partecipante)
+        invia_email_registro(sessione)
 
-        _log(sessione, 'SVOLTA', 'COMPLETATA', utente_fornitore,
-             'Chiusura aula: presenze confermate, attestati inviati')
+        _log(sessione, 'CONFERMATA', 'COMPLETATA', utente_fornitore,
+             'Chiusura aula: presenze confermate, registro compilato caricato e inviato')
     return sessione
 
 
@@ -280,8 +267,8 @@ def genera_notifiche_scadenza():
 
 def annulla_sessione(sessione, utente):
     """Cascata definita in §5: rimuove evento di calendario e iscrizioni collegate,
-    senza step di conferma intermedi. Raggiungibile da qualunque stato precedente a SVOLTA."""
-    if sessione.stato in ('SVOLTA', 'COMPLETATA', 'ANNULLATA'):
+    senza step di conferma intermedi. Raggiungibile da qualunque stato precedente a COMPLETATA."""
+    if sessione.stato in ('COMPLETATA', 'ANNULLATA'):
         raise TransizioneNonValida(f'Non è possibile annullare una sessione nello stato {sessione.stato}.')
 
     # Import locale: evita una dipendenza a livello di modulo tra le app ehs e participants.

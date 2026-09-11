@@ -66,8 +66,8 @@ class EHSSessioneListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'corso', 'corso_nome', 'negozio', 'negozio_nome',
             'fornitore', 'fornitore_nome', 'stato', 'stato_display',
-            'data_proposta', 'data_confermata', 'durata_ore',
-            'docente_nome', 'contatto_negozio_nome', 'partecipanti_count',
+            'data_proposta', 'data_confermata', 'data_suggerita_store', 'durata_ore',
+            'docente_nome', 'contatto_negozio_nome', 'partecipanti_previsti', 'partecipanti_count',
             'creata_il',
         ]
 
