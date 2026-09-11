@@ -1,4 +1,3 @@
-from django.db.models import Q
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -16,7 +15,13 @@ from django.contrib.auth import get_user_model
 from users.permissions import IsAdminOrHO
 
 from . import services
-from .models import EHSCorso, EHSNotificaScadenza, EHSNotificaSessioneConfermata, EHSSessione
+from .models import (
+    EHSCorso,
+    EHSNotificaNuovaRichiesta,
+    EHSNotificaScadenza,
+    EHSNotificaSessioneConfermata,
+    EHSSessione,
+)
 from .serializers import (
     EHSCalendarioEventoSerializer,
     EHSCorsoSerializer,
@@ -59,11 +64,8 @@ class EHSSessioneListCreateView(APIView):
         if user.livello_accesso == 'store':
             qs = qs.filter(negozio=user.store)
         elif user.livello_accesso == 'fornitore':
-            # Vede le proprie sessioni + quelle non ancora assegnate a nessun fornitore
-            # (per poterle prendere in carico proponendo una data).
-            qs = qs.filter(Q(fornitore=user) | Q(fornitore__isnull=True))
-            if user.negozi_abilitati.exists():
-                qs = qs.filter(negozio__in=user.negozi_abilitati.all())
+            # Ogni fornitore vede ed agisce solo ed esclusivamente sulle proprie sessioni.
+            qs = qs.filter(fornitore=user)
         return qs
 
     def get(self, request):
@@ -202,6 +204,23 @@ class EHSChiudiAulaView(BaseEHSSessioneActionView):
         return Response(EHSSessioneDetailSerializer(sessione).data)
 
 
+class EHSAssegnaFornitoreView(BaseEHSSessioneActionView):
+    """Assegna un fornitore a una richiesta ancora senza fornitore (store o Admin/HO) —
+    necessario perché un fornitore vede solo le proprie sessioni: senza assegnazione
+    nessuno riceverebbe mai la richiesta."""
+    def patch(self, request, pk):
+        sessione = self.get_sessione_visibile(request, pk)
+        fornitore_id = request.data.get('fornitore')
+        if not fornitore_id:
+            return Response({'detail': 'fornitore obbligatorio.'}, status=400)
+        fornitore = get_object_or_404(User, pk=fornitore_id, livello_accesso='fornitore')
+        try:
+            sessione = services.assegna_fornitore(sessione, request.user, fornitore)
+        except TransizioneNonValida as e:
+            return Response({'detail': str(e)}, status=403)
+        return Response(EHSSessioneDetailSerializer(sessione).data)
+
+
 class EHSAnnullaView(BaseEHSSessioneActionView):
     def patch(self, request, pk):
         sessione = self.get_sessione_visibile(request, pk)
@@ -222,7 +241,9 @@ class EHSCalendarioView(APIView):
     def get(self, request):
         if request.user.livello_accesso not in RUOLI_EHS:
             return Response([])
-        qs = Evento.objects.select_related('attivita', 'location_store').prefetch_related('iscrizioni')
+        qs = Evento.objects.select_related(
+            'attivita', 'location_store', 'ehs_sessione__corso', 'ehs_sessione__negozio',
+        ).prefetch_related('iscrizioni')
         params = request.query_params
         if params.get('anno') and params.get('mese'):
             qs = qs.filter(data__year=params['anno'], data__month=params['mese'])
@@ -368,9 +389,42 @@ class EHSNotificaSessioneConfermataView(APIView):
         return Response({'ok': True})
 
 
+class EHSNotificaNuovaRichiestaView(APIView):
+    """Popup + pallino sulla home del fornitore quando gli arriva una nuova richiesta."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.livello_accesso != 'fornitore':
+            return Response([])
+        qs = EHSNotificaNuovaRichiesta.objects.filter(
+            fornitore=user, letta=False
+        ).select_related('sessione__corso', 'sessione__negozio').order_by('creata_il')
+        return Response([
+            {
+                'id': n.id,
+                'sessione_id': n.sessione_id,
+                'corso_nome': n.sessione.corso.nome,
+                'negozio_nome': str(n.sessione.negozio),
+            }
+            for n in qs
+        ])
+
+    def patch(self, request, pk):
+        try:
+            n = EHSNotificaNuovaRichiesta.objects.get(pk=pk, fornitore=request.user)
+        except EHSNotificaNuovaRichiesta.DoesNotExist:
+            return Response(status=404)
+        n.letta = True
+        n.save(update_fields=['letta'])
+        return Response({'ok': True})
+
+
 class EHSRegistriView(APIView):
-    """Sezione 'Registri' per lo store: sessioni completate con il relativo registro
-    compilato, consultabile ma non scaricabile (vedi EHSRegistroFileView)."""
+    """Sezione 'Registri': sessioni completate con il relativo registro compilato,
+    consultabile ma non scaricabile (vedi EHSRegistroFileView). Admin/HO vedono tutto
+    e possono filtrare per negozio/fornitore/corso (query params: negozio, fornitore,
+    corso) — necessario dato il volume su tutti i negozi/fornitori."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -379,20 +433,35 @@ class EHSRegistriView(APIView):
             return Response([])
         qs = (EHSSessione.objects.filter(stato='COMPLETATA')
               .exclude(registro_compilato_file='')
-              .select_related('corso', 'negozio', 'fornitore'))
+              .select_related('corso', 'negozio', 'fornitore')
+              .prefetch_related('partecipanti__utente__store'))
         if user.livello_accesso == 'store':
             qs = qs.filter(negozio=user.store)
         elif user.livello_accesso == 'fornitore':
             qs = qs.filter(fornitore=user)
+        elif user.livello_accesso in ('admin', 'ho'):
+            params = request.query_params
+            if params.get('negozio'):
+                qs = qs.filter(negozio_id=params['negozio'])
+            if params.get('fornitore'):
+                qs = qs.filter(fornitore_id=params['fornitore'])
+            if params.get('corso'):
+                qs = qs.filter(corso_id=params['corso'])
         return Response([
             {
                 'id': s.id,
                 'corso_nome': s.corso.nome,
                 'negozio_nome': str(s.negozio),
+                'negozio_id': s.negozio_id,
                 'data_confermata': s.data_confermata,
                 'docente_nome': s.docente_nome,
                 'fornitore_nome': s.fornitore.fornitore_ragione_sociale if s.fornitore else None,
+                'fornitore_id': s.fornitore_id,
                 'partecipanti_count': s.partecipanti.count(),
+                'partecipanti': [
+                    {'utente_nome': p.utente.nome_completo, 'presente': p.presente}
+                    for p in s.partecipanti.all()
+                ],
             }
             for s in qs.order_by('-data_confermata')
         ])

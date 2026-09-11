@@ -31,15 +31,22 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
 class EHSPartecipanteSerializer(serializers.ModelSerializer):
     utente_nome = serializers.CharField(source='utente.nome_completo', read_only=True)
     utente_email = serializers.CharField(source='utente.email', read_only=True)
+    utente_store_nome = serializers.SerializerMethodField()
 
     class Meta:
         model = EHSPartecipante
         fields = [
-            'id', 'utente', 'utente_nome', 'utente_email', 'iscritto_il',
+            'id', 'utente', 'utente_nome', 'utente_email', 'utente_store_nome', 'iscritto_il',
             'presente', 'assente_motivo',
             'attestato_file', 'attestato_caricato_il',
             'completato', 'completato_il', 'scadenza_formazione',
         ]
+
+    def get_utente_store_nome(self, obj):
+        store = obj.utente.store
+        if not store:
+            return None
+        return store.codice_store or store.nome
         read_only_fields = [
             'iscritto_il', 'attestato_file', 'attestato_caricato_il',
             'completato', 'completato_il', 'scadenza_formazione',
@@ -102,6 +109,8 @@ class EHSCalendarioEventoSerializer(serializers.ModelSerializer):
     posti_disponibili = serializers.ReadOnlyField()
     ehs_sessione_id = serializers.SerializerMethodField()
     ehs_sessione_stato = serializers.SerializerMethodField()
+    ehs_corso_nome = serializers.SerializerMethodField()
+    ehs_negozio_codice = serializers.SerializerMethodField()
 
     class Meta:
         model = Evento
@@ -109,6 +118,7 @@ class EHSCalendarioEventoSerializer(serializers.ModelSerializer):
             'id', 'data', 'ora_inizio', 'ora_fine', 'attivita_nome', 'attivita_tipologia',
             'location_display', 'max_partecipanti', 'iscritti_count', 'posti_disponibili',
             'is_ehs', 'ehs_luogo', 'ehs_sessione_id', 'ehs_sessione_stato',
+            'ehs_corso_nome', 'ehs_negozio_codice',
         ]
 
     def get_iscritti_count(self, obj):
@@ -121,3 +131,13 @@ class EHSCalendarioEventoSerializer(serializers.ModelSerializer):
     def get_ehs_sessione_stato(self, obj):
         sessione = getattr(obj, 'ehs_sessione', None)
         return sessione.stato if sessione else None
+
+    def get_ehs_corso_nome(self, obj):
+        sessione = getattr(obj, 'ehs_sessione', None)
+        return sessione.corso.nome if sessione else None
+
+    def get_ehs_negozio_codice(self, obj):
+        sessione = getattr(obj, 'ehs_sessione', None)
+        if not sessione:
+            return None
+        return sessione.negozio.codice_store or sessione.negozio.nome

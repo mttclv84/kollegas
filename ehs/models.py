@@ -171,3 +171,20 @@ class EHSNotificaSessioneConfermata(models.Model):
 
     def __str__(self):
         return f'Conferma {self.sessione} — {self.fornitore}'
+
+
+class EHSNotificaNuovaRichiesta(models.Model):
+    """Popup + pallino sulla home del fornitore quando gli viene assegnata una
+    nuova richiesta (alla creazione o tramite assegnazione successiva)."""
+    sessione = models.ForeignKey(EHSSessione, on_delete=models.CASCADE, related_name='notifiche_richiesta')
+    fornitore = models.ForeignKey('users.User', on_delete=models.CASCADE, related_name='ehs_notifiche_richiesta')
+    creata_il = models.DateTimeField(auto_now_add=True)
+    letta = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Notifica Nuova Richiesta EHS'
+        verbose_name_plural = 'Notifiche Nuova Richiesta EHS'
+        ordering = ['-creata_il']
+
+    def __str__(self):
+        return f'Nuova richiesta {self.sessione} — {self.fornitore}'

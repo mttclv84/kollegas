@@ -62,7 +62,9 @@ class EventoListCreateView(generics.ListCreateAPIView):
         return EventoListSerializer
 
     def get_queryset(self):
-        qs = Evento.objects.select_related('attivita', 'host', 'location_store').prefetch_related('iscrizioni')
+        qs = Evento.objects.select_related(
+            'attivita', 'host', 'location_store', 'ehs_sessione__corso', 'ehs_sessione__negozio',
+        ).prefetch_related('iscrizioni')
         params = self.request.query_params
         if params.get('anno') and params.get('mese'):
             qs = qs.filter(data__year=params['anno'], data__month=params['mese'])

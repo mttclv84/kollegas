@@ -54,7 +54,36 @@ def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_n
         nota = 'Richiesta creata dallo store'
         if fornitore:
             nota += f' — assegnata a {fornitore.fornitore_ragione_sociale or fornitore.nome_completo}'
+            _notifica_nuova_richiesta(sessione, fornitore)
         _log(sessione, '', sessione.stato, store_user, nota)
+    return sessione
+
+
+def _notifica_nuova_richiesta(sessione, fornitore):
+    from .models import EHSNotificaNuovaRichiesta
+    EHSNotificaNuovaRichiesta.objects.create(sessione=sessione, fornitore=fornitore)
+
+
+def assegna_fornitore(sessione, utente, fornitore):
+    """Assegna un fornitore a una richiesta ancora senza fornitore (store o Admin/HO):
+    serve a chiudere il caso in cui una richiesta creata senza fornitore specifico
+    debba comunque diventare visibile a qualcuno, dato che ogni fornitore vede ed
+    agisce solo sulle proprie sessioni."""
+    if utente.livello_accesso not in RUOLI_STORE:
+        raise TransizioneNonValida('Solo lo Store (o Admin/HO) può assegnare un fornitore.')
+    if sessione.stato != 'RICHIESTA_INVIATA':
+        raise TransizioneNonValida(f'Non è possibile assegnare un fornitore dallo stato {sessione.stato}.')
+    if sessione.fornitore_id:
+        raise TransizioneNonValida('La richiesta ha già un fornitore assegnato.')
+    if fornitore.livello_accesso != 'fornitore':
+        raise TransizioneNonValida('Il fornitore selezionato non è un utente di livello Fornitore EHS.')
+
+    with transaction.atomic():
+        sessione.fornitore = fornitore
+        sessione.save(update_fields=['fornitore'])
+        _notifica_nuova_richiesta(sessione, fornitore)
+        _log(sessione, sessione.stato, sessione.stato, utente,
+             f'Fornitore assegnato: {fornitore.fornitore_ragione_sociale or fornitore.nome_completo}')
     return sessione
 
 
@@ -73,7 +102,11 @@ def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telef
     with transaction.atomic():
         stato_precedente = sessione.stato
         sessione.data_proposta = data_proposta
-        sessione.fornitore = fornitore
+        # Non sovrascrivere un fornitore già assegnato quando l'azione è compiuta da
+        # Admin/HO per suo conto — altrimenti la sessione risulterebbe erroneamente
+        # "posseduta" dall'Admin, invisibile poi al vero fornitore assegnato.
+        if fornitore.livello_accesso == 'fornitore':
+            sessione.fornitore = fornitore
         sessione.docente_nome = docente_nome
         sessione.docente_telefono = docente_telefono
         sessione.stato = 'DATA_PROPOSTA'
@@ -207,6 +240,8 @@ def chiudi_aula(sessione, presenze, registro_compilato_file, utente_fornitore, a
     if not registro_compilato_file:
         raise TransizioneNonValida('Il registro compilato è obbligatorio per chiudere l\'aula.')
 
+    from participants.models import Iscrizione
+
     with transaction.atomic():
         now = timezone.now()
         sessione.data_chiusura = now
@@ -227,6 +262,13 @@ def chiudi_aula(sessione, presenze, registro_compilato_file, utente_fornitore, a
                 partecipante.completato = False
                 partecipante.assente_motivo = assenze_motivo.get(partecipante.id, '')
             partecipante.save()
+
+            # Allinea l'iscrizione standard (Report/Completamento generali di Kollegas):
+            # un assente EHS deve risultare "assente" anche fuori dalla sezione EHS.
+            if sessione.calendario_evento_id:
+                Iscrizione.objects.filter(
+                    evento_id=sessione.calendario_evento_id, user=partecipante.utente
+                ).update(stato='partecipato' if partecipante.presente else 'assente')
 
         invia_email_registro(sessione)
 
