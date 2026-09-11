@@ -3,7 +3,8 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    path('ehs/corsi/', views.EHSCorsoListView.as_view(), name='ehs-corso-list'),
+    path('ehs/corsi/', views.EHSCorsoListCreateView.as_view(), name='ehs-corso-list'),
+    path('ehs/corsi/<int:pk>/', views.EHSCorsoDetailView.as_view(), name='ehs-corso-detail'),
     path('ehs/sessioni/', views.EHSSessioneListCreateView.as_view(), name='ehs-sessione-list'),
     path('ehs/sessioni/<int:pk>/', views.EHSSessioneDetailView.as_view(), name='ehs-sessione-detail'),
     path('ehs/sessioni/<int:pk>/proponi-data/', views.EHSProponiDataView.as_view(), name='ehs-proponi-data'),

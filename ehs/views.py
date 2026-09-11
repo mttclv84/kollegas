@@ -2,6 +2,7 @@ from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from rest_framework import generics
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -46,14 +47,37 @@ def _parse_data(value):
     return dt
 
 
-class EHSCorsoListView(APIView):
-    permission_classes = [IsAuthenticated]
+class EHSCorsoListCreateView(generics.ListCreateAPIView):
+    """Catalogo dei corsi EHS selezionabili in 'Nuova Richiesta'. Store/fornitore
+    vedono solo i corsi attivi (per la tendina); Admin/HO vedono anche quelli
+    disattivati, per poterli gestire/riattivare dalla pagina di gestione."""
+    serializer_class = EHSCorsoSerializer
+    pagination_class = None  # il frontend si aspetta un array semplice, non paginato
 
-    def get(self, request):
-        if request.user.livello_accesso not in RUOLI_EHS:
-            return Response([])
-        qs = EHSCorso.objects.filter(attivo=True)
-        return Response(EHSCorsoSerializer(qs, many=True).data)
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [IsAuthenticated()]
+        return [IsAdminOrHO()]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.livello_accesso not in RUOLI_EHS:
+            return EHSCorso.objects.none()
+        qs = EHSCorso.objects.all().order_by('nome')
+        if user.livello_accesso not in ('admin', 'ho'):
+            qs = qs.filter(attivo=True)
+        return qs
+
+
+class EHSCorsoDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = EHSCorsoSerializer
+    queryset = EHSCorso.objects.all()
+    permission_classes = [IsAdminOrHO]
+
+    def perform_destroy(self, instance):
+        # Non elimina fisicamente: potrebbe essere referenziato da sessioni storiche.
+        instance.attivo = False
+        instance.save(update_fields=['attivo'])
 
 
 class EHSSessioneListCreateView(APIView):

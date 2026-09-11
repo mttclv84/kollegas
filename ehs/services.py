@@ -118,16 +118,17 @@ def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telef
 
 def _crea_evento_calendario(sessione):
     """Crea l'evento 'leggero' sul calendario principale al raggiungimento di CONFERMATA (§5).
-    Titolo fisso 'EHS' (nessun dettaglio su fornitore/docente/corso visibile fuori da EHS):
-    riusa un'Attività Catalogo e un Host fissi, dedicati, così da non toccare i vincoli
-    esistenti su Evento.attivita/Evento.host (entrambi FK obbligatorie, vedi ricognizione step 1)."""
+    Riusa un Host fisso, dedicato, così da non toccare i vincoli esistenti su Evento.host
+    (FK obbligatoria, vedi ricognizione step 1). L'Attività Catalogo è invece agganciata al
+    nome dello specifico corso EHS (non più a una voce fissa 'EHS' generica): così Report e
+    Stats, che raggruppano per attività, mostrano il dettaglio per singolo corso EHS."""
     from events.models import AttivitaCatalogo, Evento, Host, TipologiaAttivita
 
     host, _ = Host.objects.get_or_create(
         descrizione='Fornitore Esterno EHS', defaults={'posizione': 'esterno'}
     )
     attivita, _ = AttivitaCatalogo.objects.get_or_create(
-        nome='EHS', defaults={'tipologia': TipologiaAttivita.EHS}
+        nome=sessione.corso.nome, defaults={'tipologia': TipologiaAttivita.EHS}
     )
 
     ora_inizio = sessione.data_confermata.time()
