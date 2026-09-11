@@ -25,6 +25,7 @@ from .models import (
     EHSNotificaScadenza,
     EHSNotificaSessioneConfermata,
     EHSNotificaSessioneConfermataStore,
+    EHSPartecipante,
     EHSSessione,
 )
 from .serializers import (
@@ -94,6 +95,33 @@ class EHSCorsoDetailView(generics.RetrieveUpdateDestroyAPIView):
         # Non elimina fisicamente: potrebbe essere referenziato da sessioni storiche.
         instance.attivo = False
         instance.save(update_fields=['attivo'])
+
+
+class EHSVerificaPartecipanteView(APIView):
+    """GET /ehs/verifica-partecipante/?utente=<id>&corso=<id> — dice se l'utente ha
+    già completato questo corso con formazione ancora valida (non scaduta): usato
+    da Gestione Partecipanti per avvisare prima di una nuova iscrizione ridondante."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        utente_id = request.query_params.get('utente')
+        corso_id = request.query_params.get('corso')
+        if not utente_id or not corso_id:
+            return Response({'valido': False})
+        oggi = timezone.now().date()
+        p = (EHSPartecipante.objects
+             .filter(utente_id=utente_id, sessione__corso_id=corso_id,
+                     presente=True, scadenza_formazione__gte=oggi)
+             .select_related('sessione__corso')
+             .order_by('-scadenza_formazione')
+             .first())
+        if not p:
+            return Response({'valido': False})
+        return Response({
+            'valido': True,
+            'corso_nome': p.sessione.corso.nome,
+            'scadenza_formazione': p.scadenza_formazione,
+        })
 
 
 class EHSSessioneListCreateView(APIView):

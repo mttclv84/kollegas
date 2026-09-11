@@ -133,7 +133,7 @@ class NotificaEventoView(APIView):
 
 class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = EventoDetailSerializer
-    queryset = Evento.objects.select_related('attivita', 'host', 'location_store', 'created_by')
+    queryset = Evento.objects.select_related('attivita', 'host', 'location_store', 'created_by', 'ehs_sessione')
 
     def get_permissions(self):
         if self.request.method == 'GET':

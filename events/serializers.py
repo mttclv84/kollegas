@@ -67,6 +67,7 @@ class EventoDetailSerializer(serializers.ModelSerializer):
     iscritti_count = serializers.SerializerMethodField()
     posti_disponibili = serializers.ReadOnlyField()
     created_by_nome = serializers.CharField(source='created_by.nome_completo', read_only=True)
+    ehs_corso_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Evento
@@ -78,8 +79,13 @@ class EventoDetailSerializer(serializers.ModelSerializer):
             'max_partecipanti', 'modalita_partecipazione', 'nota',
             'iscritti_count', 'posti_disponibili',
             'created_by', 'created_by_nome', 'created_at', 'updated_at',
+            'is_ehs', 'ehs_corso_id',
         ]
         read_only_fields = ['ore_totali', 'created_by', 'created_at', 'updated_at']
+
+    def get_ehs_corso_id(self, obj):
+        sessione = getattr(obj, 'ehs_sessione', None)
+        return sessione.corso_id if sessione else None
 
     def get_iscritti_count(self, obj):
         return obj.iscrizioni.count()
