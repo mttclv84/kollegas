@@ -77,7 +77,7 @@ class EHSCorsoListCreateView(generics.ListCreateAPIView):
         user = self.request.user
         if user.livello_accesso not in RUOLI_EHS:
             return EHSCorso.objects.none()
-        qs = EHSCorso.objects.all().order_by('nome')
+        qs = EHSCorso.objects.select_related('fornitore').order_by('nome')
         if user.livello_accesso not in ('admin', 'admin_ehs', 'ho'):
             qs = qs.filter(attivo=True)
         return qs
@@ -88,7 +88,7 @@ class EHSCorsoListCreateView(generics.ListCreateAPIView):
 
 class EHSCorsoDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = EHSCorsoSerializer
-    queryset = EHSCorso.objects.all()
+    queryset = EHSCorso.objects.select_related('fornitore')
     permission_classes = [IsAdminOrHOEHS]
 
     def perform_destroy(self, instance):
@@ -162,7 +162,7 @@ class EHSSessioneListCreateView(APIView):
             return Response({'detail': 'Corso, contatto negozio e telefono sono obbligatori.'}, status=400)
 
         try:
-            corso = EHSCorso.objects.get(pk=corso_id, attivo=True)
+            corso = EHSCorso.objects.select_related('fornitore').get(pk=corso_id, attivo=True)
         except EHSCorso.DoesNotExist:
             return Response({'detail': 'Corso non trovato.'}, status=404)
 
@@ -176,10 +176,15 @@ class EHSSessioneListCreateView(APIView):
                 return Response({'detail': 'Negozio obbligatorio.'}, status=400)
             negozio = get_object_or_404(Store, pk=negozio_id)
 
-        fornitore = None
-        fornitore_id = request.data.get('fornitore')
-        if fornitore_id:
-            fornitore = get_object_or_404(User, pk=fornitore_id, livello_accesso='fornitore')
+        # Il fornitore è quello abbinato al corso (obbligatorio per i corsi creati
+        # dopo l'introduzione di questo campo): non è più scelto dallo store, non è
+        # modificabile da input client. Fallback al vecchio comportamento (fornitore
+        # scelto in richiesta) solo per corsi storici senza fornitore abbinato.
+        fornitore = corso.fornitore
+        if fornitore is None:
+            fornitore_id = request.data.get('fornitore')
+            if fornitore_id:
+                fornitore = get_object_or_404(User, pk=fornitore_id, livello_accesso='fornitore')
 
         try:
             sessione = services.crea_richiesta(

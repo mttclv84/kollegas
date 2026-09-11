@@ -23,12 +23,32 @@ class EHSFornitoreSerializer(serializers.ModelSerializer):
 
 
 class EHSCorsoSerializer(serializers.ModelSerializer):
+    fornitore_nome = serializers.SerializerMethodField()
+
     class Meta:
         model = EHSCorso
-        fields = ['id', 'codice', 'nome', 'durata_ore', 'descrizione', 'attivo', 'scadenza_giorni']
+        fields = [
+            'id', 'codice', 'nome', 'durata_ore', 'descrizione', 'attivo', 'scadenza_giorni',
+            'fornitore', 'fornitore_nome',
+        ]
         # Il codice è generato automaticamente alla creazione (EHS + 4 cifre random) e
-        # non è mai modificabile da input client, né in creazione né in modifica.
-        extra_kwargs = {'codice': {'read_only': True}}
+        # non è mai modificabile da input client, né in creazione né in modifica. Il
+        # fornitore è invece obbligatorio: ogni corso deve essere abbinato a un
+        # fornitore EHS (scelto dal menù) per poterlo salvare o modificare.
+        extra_kwargs = {
+            'codice': {'read_only': True},
+            'fornitore': {'required': True, 'allow_null': False},
+        }
+
+    def get_fornitore_nome(self, obj):
+        if not obj.fornitore_id:
+            return None
+        return obj.fornitore.fornitore_ragione_sociale or obj.fornitore.nome_completo
+
+    def validate_fornitore(self, value):
+        if value.livello_accesso != 'fornitore':
+            raise serializers.ValidationError('Il fornitore selezionato non è un utente di livello Fornitore EHS.')
+        return value
 
 
 class EHSPartecipanteSerializer(serializers.ModelSerializer):

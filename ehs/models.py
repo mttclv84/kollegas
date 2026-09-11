@@ -10,6 +10,14 @@ class EHSCorso(models.Model):
     # Se valorizzato, alla chiusura aula si calcola la scadenza per ogni
     # partecipante presente. Se null, il corso non prevede scadenza.
     scadenza_giorni = models.PositiveIntegerField(null=True, blank=True)
+    # Nullable solo per compatibilità con corsi creati prima dell'introduzione di
+    # questo campo (es. "SCALE"): l'API impone la scelta per ogni nuovo corso e per
+    # qualunque modifica successiva di uno esistente (vedi EHSCorsoSerializer).
+    fornitore = models.ForeignKey(
+        'users.User', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='corsi_ehs_gestiti',
+        limit_choices_to={'livello_accesso': 'fornitore'},
+    )
 
     class Meta:
         verbose_name = 'Corso EHS'
