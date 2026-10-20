@@ -1,3 +1,4 @@
+import mimetypes
 import random
 
 from django.http import FileResponse
@@ -19,6 +20,7 @@ from users.permissions import IsAdminEHS, IsAdminOrHOEHS
 
 from . import services
 from .models import (
+    EHSConfigurazione,
     EHSCorso,
     EHSNotificaDataProposta,
     EHSNotificaNuovaRichiesta,
@@ -77,7 +79,7 @@ class EHSCorsoListCreateView(generics.ListCreateAPIView):
         user = self.request.user
         if user.livello_accesso not in RUOLI_EHS:
             return EHSCorso.objects.none()
-        qs = EHSCorso.objects.select_related('fornitore').order_by('nome')
+        qs = EHSCorso.objects.prefetch_related('offerte__fornitore', 'offerte__negozi').order_by('nome')
         if user.livello_accesso not in ('admin', 'admin_ehs', 'ho'):
             qs = qs.filter(attivo=True)
         return qs
@@ -88,13 +90,37 @@ class EHSCorsoListCreateView(generics.ListCreateAPIView):
 
 class EHSCorsoDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = EHSCorsoSerializer
-    queryset = EHSCorso.objects.select_related('fornitore')
+    queryset = EHSCorso.objects.prefetch_related('offerte__fornitore', 'offerte__negozi')
     permission_classes = [IsAdminOrHOEHS]
 
     def perform_destroy(self, instance):
         # Non elimina fisicamente: potrebbe essere referenziato da sessioni storiche.
         instance.attivo = False
         instance.save(update_fields=['attivo'])
+
+
+class EHSCorsoFornitoriView(APIView):
+    """GET /ehs/corsi/<pk>/fornitori/?negozio=<id> — fornitori che erogano il corso
+    per il negozio ('idonei') e quelli richiedibili solo in via eccezionale. Per lo
+    store il negozio è sempre il proprio."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        user = request.user
+        if user.livello_accesso not in ('store', 'admin', 'admin_ehs', 'ho'):
+            return Response({'detail': 'Non autorizzato.'}, status=403)
+        corso = get_object_or_404(EHSCorso, pk=pk)
+        if user.livello_accesso == 'store':
+            negozio = user.store
+        else:
+            negozio_id = request.query_params.get('negozio')
+            negozio = Store.objects.filter(pk=negozio_id).first() if negozio_id else None
+        if negozio is None:
+            return Response({'idonei': [], 'eccezionali': []})
+        return Response({
+            'idonei': EHSFornitoreSerializer(services.fornitori_idonei(corso, negozio), many=True).data,
+            'eccezionali': EHSFornitoreSerializer(services.fornitori_eccezionali(corso, negozio), many=True).data,
+        })
 
 
 class EHSVerificaPartecipanteView(APIView):
@@ -128,7 +154,7 @@ class EHSSessioneListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset_per_ruolo(self, user):
-        qs = EHSSessione.objects.select_related('corso', 'negozio', 'fornitore', 'creata_da')
+        qs = EHSSessione.objects.select_related('corso', 'negozio', 'fornitore', 'fornitore_richiesto', 'creata_da')
         if user.livello_accesso == 'store':
             qs = qs.filter(negozio=user.store)
         elif user.livello_accesso == 'fornitore':
@@ -175,24 +201,26 @@ class EHSSessioneListCreateView(APIView):
                 return Response({'detail': 'Negozio obbligatorio.'}, status=400)
             negozio = get_object_or_404(Store, pk=negozio_id)
 
-        # Il fornitore è quello abbinato al corso (obbligatorio per i corsi creati
-        # dopo l'introduzione di questo campo): non è più scelto dallo store, non è
-        # modificabile da input client. Fallback al vecchio comportamento (fornitore
-        # scelto in richiesta) solo per corsi storici senza fornitore abbinato.
-        fornitore = corso.fornitore
-        if fornitore is None:
-            fornitore_id = request.data.get('fornitore')
-            if fornitore_id:
-                fornitore = get_object_or_404(User, pk=fornitore_id, livello_accesso='fornitore')
+        # Il fornitore va scelto tra quelli che erogano il corso per il negozio (se è
+        # uno solo viene assegnato in automatico); con 'eccezionale' può essere un
+        # fornitore fuori perimetro, e la richiesta passa prima dall'EHS Admin.
+        fornitore = None
+        fornitore_id = request.data.get('fornitore')
+        if fornitore_id:
+            fornitore = get_object_or_404(User, pk=fornitore_id, livello_accesso='fornitore')
+        eccezionale = str(request.data.get('eccezionale', '')).lower() in ('true', '1', 'on')
 
         try:
             sessione = services.crea_richiesta(
                 user, corso, negozio, contatto_nome, '', note, fornitore=fornitore,
                 partecipanti_previsti=partecipanti_previsti, data_suggerita_store=data_suggerita_store,
+                modalita=request.data.get('modalita') or 'PRESENZA',
+                eccezionale=eccezionale,
+                motivazione_eccezione=request.data.get('motivazione_eccezione') or '',
             )
         except TransizioneNonValida as e:
-            return Response({'detail': str(e)}, status=403)
-        return Response(EHSSessioneDetailSerializer(sessione).data, status=201)
+            return Response({'detail': str(e)}, status=400)
+        return Response(EHSSessioneDetailSerializer(sessione, context={'request': request}).data, status=201)
 
 
 class BaseEHSSessioneActionView(APIView):
@@ -204,14 +232,28 @@ class BaseEHSSessioneActionView(APIView):
         user = request.user
         qs = EHSSessioneListCreateView().get_queryset_per_ruolo(user)
         if user.livello_accesso in ('admin', 'admin_ehs', 'ho'):
-            qs = EHSSessione.objects.select_related('corso', 'negozio', 'fornitore', 'creata_da')
+            qs = EHSSessione.objects.select_related('corso', 'negozio', 'fornitore', 'fornitore_richiesto', 'creata_da')
         return get_object_or_404(qs, pk=pk)
+
+    def risposta(self, request, sessione):
+        return Response(EHSSessioneDetailSerializer(sessione, context={'request': request}).data)
+
+    def esegui(self, request, pk, azione, status_errore=403):
+        """Recupera la sessione visibile, applica l'azione di servizio e risponde
+        con il dettaglio aggiornato (o con l'errore della macchina a stati)."""
+        sessione = self.get_sessione_visibile(request, pk)
+        try:
+            sessione = azione(sessione) or sessione
+        except TransizioneNonValida as e:
+            return Response({'detail': str(e)}, status=status_errore)
+        sessione.refresh_from_db()
+        return self.risposta(request, sessione)
 
 
 class EHSSessioneDetailView(BaseEHSSessioneActionView):
     def get(self, request, pk):
         sessione = self.get_sessione_visibile(request, pk)
-        return Response(EHSSessioneDetailSerializer(sessione).data)
+        return self.risposta(request, sessione)
 
 
 class EHSProponiDataView(BaseEHSSessioneActionView):
@@ -224,11 +266,14 @@ class EHSProponiDataView(BaseEHSSessioneActionView):
             return Response({'detail': 'data_proposta obbligatoria (ISO datetime).'}, status=400)
         if not docente_nome or not docente_telefono:
             return Response({'detail': 'Nome e telefono del docente sono obbligatori.'}, status=400)
+        link_online = request.data.get('link_online')
+        link_online = link_online.strip() if isinstance(link_online, str) else None
         try:
-            sessione = services.proponi_data(sessione, request.user, data_proposta, docente_nome, docente_telefono)
+            sessione = services.proponi_data(sessione, request.user, data_proposta, docente_nome, docente_telefono,
+                                             link_online=link_online)
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=403)
-        return Response(EHSSessioneDetailSerializer(sessione).data)
+        return self.risposta(request, sessione)
 
 
 class EHSRispondiDataView(BaseEHSSessioneActionView):
@@ -240,7 +285,7 @@ class EHSRispondiDataView(BaseEHSSessioneActionView):
             sessione = services.rispondi_data(sessione, request.user, accetta, nuova_data)
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=403)
-        return Response(EHSSessioneDetailSerializer(sessione).data)
+        return self.risposta(request, sessione)
 
 
 class EHSAccettaContropropostaView(BaseEHSSessioneActionView):
@@ -251,18 +296,18 @@ class EHSAccettaContropropostaView(BaseEHSSessioneActionView):
             sessione = services.accetta_controproposta(sessione, request.user)
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=403)
-        return Response(EHSSessioneDetailSerializer(sessione).data)
+        return self.risposta(request, sessione)
 
 
 class EHSChiudiAulaView(BaseEHSSessioneActionView):
     """Ultimo passaggio del wizard 'Aula completata': un solo submit multipart con
     le presenze per partecipante ('presente_<id>' bool, 'motivo_<id>' opzionale per
-    gli assenti) e il registro compilato ('file', un solo documento per la sessione)."""
+    gli assenti) e uno o più documenti di chiusura ('files', ripetuto)."""
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, pk):
         sessione = self.get_sessione_visibile(request, pk)
-        file = request.FILES.get('file')
+        files = request.FILES.getlist('files') or request.FILES.getlist('file')
         presenze, assenze_motivo = {}, {}
         for p in sessione.partecipanti.all():
             presenze[p.id] = str(request.data.get(f'presente_{p.id}', '')).lower() in ('true', '1', 'on')
@@ -270,16 +315,16 @@ class EHSChiudiAulaView(BaseEHSSessioneActionView):
             if motivo:
                 assenze_motivo[p.id] = motivo
         try:
-            sessione = services.chiudi_aula(sessione, presenze, file, request.user, assenze_motivo)
+            sessione = services.chiudi_aula(sessione, presenze, files, request.user, assenze_motivo)
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=403)
-        return Response(EHSSessioneDetailSerializer(sessione).data)
+        return self.risposta(request, sessione)
 
 
 class EHSAssegnaFornitoreView(BaseEHSSessioneActionView):
-    """Assegna un fornitore a una richiesta ancora senza fornitore (store o Admin/HO) —
-    necessario perché un fornitore vede solo le proprie sessioni: senza assegnazione
-    nessuno riceverebbe mai la richiesta."""
+    """Assegna un fornitore idoneo a una richiesta ancora senza fornitore o rimasta
+    senza fornitore disponibile (store o Admin/HO) — necessario perché un fornitore
+    vede solo le proprie sessioni: senza assegnazione nessuno riceverebbe la richiesta."""
     def patch(self, request, pk):
         sessione = self.get_sessione_visibile(request, pk)
         fornitore_id = request.data.get('fornitore')
@@ -290,7 +335,7 @@ class EHSAssegnaFornitoreView(BaseEHSSessioneActionView):
             sessione = services.assegna_fornitore(sessione, request.user, fornitore)
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=403)
-        return Response(EHSSessioneDetailSerializer(sessione).data)
+        return self.risposta(request, sessione)
 
 
 class EHSAnnullaView(BaseEHSSessioneActionView):
@@ -300,14 +345,68 @@ class EHSAnnullaView(BaseEHSSessioneActionView):
             sessione = services.annulla_sessione(sessione, request.user)
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=400)
-        return Response(EHSSessioneDetailSerializer(sessione).data)
+        return self.risposta(request, sessione)
+
+
+class EHSNonDisponibileView(BaseEHSSessioneActionView):
+    """Il fornitore segnala di non poter erogare la formazione richiesta."""
+    def patch(self, request, pk):
+        motivo = (request.data.get('motivo') or '').strip()
+        return self.esegui(request, pk, lambda s: services.dichiara_non_disponibile(s, request.user, motivo))
+
+
+class EHSRichiestaEccezionaleView(BaseEHSSessioneActionView):
+    """Lo store chiede un fornitore fuori dal proprio perimetro (da approvare EHS Admin)."""
+    def patch(self, request, pk):
+        fornitore_id = request.data.get('fornitore')
+        if not fornitore_id:
+            return Response({'detail': 'fornitore obbligatorio.'}, status=400)
+        fornitore = get_object_or_404(User, pk=fornitore_id, livello_accesso='fornitore')
+        motivazione = request.data.get('motivazione') or ''
+        return self.esegui(request, pk, lambda s: services.richiedi_eccezione(s, request.user, fornitore, motivazione))
+
+
+class EHSDecidiEccezioneView(BaseEHSSessioneActionView):
+    """L'EHS Admin approva ('approva': true) o rifiuta una richiesta eccezionale."""
+    def patch(self, request, pk):
+        approva = bool(request.data.get('approva'))
+        nota = (request.data.get('nota') or '').strip()
+        return self.esegui(request, pk, lambda s: services.decidi_eccezione(s, request.user, approva, nota))
+
+
+class EHSLinkOnlineView(BaseEHSSessioneActionView):
+    def patch(self, request, pk):
+        link = (request.data.get('link_online') or '').strip()
+        return self.esegui(request, pk, lambda s: services.aggiorna_link_online(s, request.user, link))
+
+
+class EHSRimuoviPartecipanteView(BaseEHSSessioneActionView):
+    """DELETE /ehs/sessioni/<pk>/partecipanti/<partecipante_id>/ — cancella l'iscrizione
+    (store, fornitore o Admin), fino a 7 giorni prima della formazione."""
+    def delete(self, request, pk, partecipante_id):
+        sessione = self.get_sessione_visibile(request, pk)
+        partecipante = get_object_or_404(EHSPartecipante.objects.select_related('utente'),
+                                         pk=partecipante_id, sessione=sessione)
+        try:
+            services.rimuovi_partecipante(sessione, partecipante, request.user)
+        except TransizioneNonValida as e:
+            return Response({'detail': str(e)}, status=403)
+        return self.risposta(request, sessione)
+
+
+class EHSAttestatiCaricatiView(BaseEHSSessioneActionView):
+    """Il fornitore conferma di aver caricato gli attestati su SharePoint."""
+    def patch(self, request, pk):
+        return self.esegui(request, pk, lambda s: services.segna_attestati_caricati(s, request.user))
 
 
 class EHSCalendarioView(APIView):
     """GET /api/ehs/calendario/ — eventi del calendario principale (EHS e non, §5.6:
     'restano visibili in sola lettura tutti gli altri eventi'), nessun filtro per
     negozio: stessa visibilità del calendario Kollegas esistente (che oggi non
-    restringe per store neanche per il ruolo store — vedi EventoListCreateView)."""
+    restringe per store neanche per il ruolo store — vedi EventoListCreateView).
+    Il fornitore vede in chiaro solo le proprie sessioni: ogni altra attività, in
+    qualunque store, gli appare solo come 'Occupato' con il nome dello store."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -319,7 +418,29 @@ class EHSCalendarioView(APIView):
         params = request.query_params
         if params.get('anno') and params.get('mese'):
             qs = qs.filter(data__year=params['anno'], data__month=params['mese'])
-        return Response(EHSCalendarioEventoSerializer(qs.order_by('data', 'ora_inizio'), many=True).data)
+        qs = qs.order_by('data', 'ora_inizio')
+        if request.user.livello_accesso != 'fornitore':
+            return Response(EHSCalendarioEventoSerializer(qs, many=True).data)
+
+        risultato = []
+        for ev in qs:
+            sessione = getattr(ev, 'ehs_sessione', None) if ev.is_ehs else None
+            if sessione and sessione.fornitore_id == request.user.id:
+                risultato.append(EHSCalendarioEventoSerializer(ev).data)
+            else:
+                risultato.append(self._occupato(ev))
+        return Response(risultato)
+
+    @staticmethod
+    def _occupato(ev):
+        return {
+            'id': ev.id, 'data': ev.data, 'ora_inizio': ev.ora_inizio, 'ora_fine': ev.ora_fine,
+            'attivita_nome': 'Occupato', 'attivita_tipologia': 'altro',
+            'location_display': ev.location_store.nome if ev.location_store else '',
+            'max_partecipanti': 0, 'iscritti_count': 0, 'posti_disponibili': None,
+            'is_ehs': False, 'ehs_luogo': '', 'ehs_sessione_id': None, 'ehs_sessione_stato': None,
+            'ehs_corso_nome': None, 'ehs_negozio_codice': None, 'occupato': True,
+        }
 
 
 DEFAULT_FORNITORE_PASSWORD = 'Primark01!'
@@ -560,7 +681,7 @@ class EHSNotificaNuovaRichiestaView(APIView):
 
 
 class EHSRegistriView(APIView):
-    """Sezione 'Registri': sessioni completate con il relativo registro compilato,
+    """Sezione 'Registri': sessioni completate con i relativi documenti di chiusura,
     consultabile ma non scaricabile (vedi EHSRegistroFileView). Admin/HO vedono tutto
     e possono filtrare per negozio/fornitore/corso (query params: negozio, fornitore,
     corso) — necessario dato il volume su tutti i negozi/fornitori."""
@@ -571,9 +692,8 @@ class EHSRegistriView(APIView):
         if user.livello_accesso not in RUOLI_EHS:
             return Response([])
         qs = (EHSSessione.objects.filter(stato='COMPLETATA')
-              .exclude(registro_compilato_file='')
               .select_related('corso', 'negozio', 'fornitore')
-              .prefetch_related('partecipanti__utente__store'))
+              .prefetch_related('partecipanti__utente__store', 'documenti'))
         if user.livello_accesso == 'store':
             qs = qs.filter(negozio=user.store)
         elif user.livello_accesso == 'fornitore':
@@ -601,6 +721,8 @@ class EHSRegistriView(APIView):
                     {'utente_nome': p.utente.nome_completo, 'presente': p.presente}
                     for p in s.partecipanti.all()
                 ],
+                'documenti': [{'id': d.id, 'nome_originale': d.nome_originale} for d in s.documenti.all()],
+                'attestati_caricati_il': s.attestati_caricati_il,
             }
             for s in qs.order_by('-data_confermata')
         ])
@@ -608,7 +730,7 @@ class EHSRegistriView(APIView):
 
 class EHSRegistroDeleteView(APIView):
     """DELETE /ehs/registri/<pk>/ — elimina definitivamente l'intera sessione EHS
-    completata (registro compilato, presenze, evento sul calendario collegato e
+    completata (documenti di chiusura, presenze, evento sul calendario collegato e
     relative iscrizioni). Azione irreversibile, riservata ad Admin e Admin EHS:
     richiede la conferma testuale esatta 'ELIMINARE DEFINITIVAMENTE' nel body."""
     permission_classes = [IsAdminEHS]
@@ -619,8 +741,8 @@ class EHSRegistroDeleteView(APIView):
         if conferma != 'ELIMINARE DEFINITIVAMENTE':
             return Response({'detail': 'Conferma non valida.'}, status=400)
 
-        if sessione.registro_compilato_file:
-            sessione.registro_compilato_file.delete(save=False)
+        for doc in sessione.documenti.all():
+            doc.file.delete(save=False)
         if sessione.calendario_evento_id:
             from participants.models import Iscrizione
             Iscrizione.objects.filter(evento_id=sessione.calendario_evento_id).delete()
@@ -630,16 +752,65 @@ class EHSRegistroDeleteView(APIView):
 
 
 class EHSRegistroFileView(APIView):
-    """Serve il registro compilato in streaming (mai un URL statico diretto): il
-    frontend lo mostra inline (iframe da blob) senza esporre un link scaricabile."""
+    """Serve un documento di chiusura in streaming (mai un URL statico diretto): il
+    frontend lo mostra inline (iframe da blob) senza esporre un link scaricabile.
+    Senza documento_id serve il primo documento della sessione."""
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, pk):
+    def get(self, request, pk, documento_id=None):
         user = request.user
         sessione = get_object_or_404(EHSSessione, pk=pk, stato='COMPLETATA')
         autorizzato = user.livello_accesso in ('admin', 'admin_ehs', 'ho') or (
             user.livello_accesso == 'store' and sessione.negozio_id == user.store_id
         ) or (user.livello_accesso == 'fornitore' and sessione.fornitore_id == user.id)
-        if not autorizzato or not sessione.registro_compilato_file:
+        if not autorizzato:
             return Response(status=404)
-        return FileResponse(sessione.registro_compilato_file.open('rb'), content_type='application/pdf')
+        docs = sessione.documenti.all()
+        doc = docs.filter(pk=documento_id).first() if documento_id else docs.first()
+        if not doc:
+            return Response(status=404)
+        content_type = mimetypes.guess_type(doc.nome_originale or doc.file.name)[0] or 'application/octet-stream'
+        return FileResponse(doc.file.open('rb'), content_type=content_type)
+
+
+class EHSScadenzeView(APIView):
+    """Pannello 'Alert scadenze': formazioni che scadono entro 45 giorni (o già
+    scadute) con il countdown. Lo store vede i collaboratori in forza nel proprio
+    negozio; Admin/HO tutti, con filtro opzionale ?negozio=<id>."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.livello_accesso == 'store':
+            if not user.store_id:
+                return Response([])
+            negozio = user.store
+        elif user.livello_accesso in ('admin', 'admin_ehs', 'ho'):
+            negozio_id = request.query_params.get('negozio')
+            negozio = get_object_or_404(Store, pk=negozio_id) if negozio_id else None
+        else:
+            return Response([])
+        return Response(services.scadenze_in_arrivo(negozio=negozio))
+
+
+class EHSConfigurazioneView(APIView):
+    """Impostazioni globali EHS (link alla cartella SharePoint degli attestati):
+    leggibili da tutti i ruoli EHS, modificabili solo da Admin/EHS Admin."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.livello_accesso not in RUOLI_EHS:
+            return Response(status=403)
+        config = EHSConfigurazione.get()
+        return Response({'sharepoint_attestati_url': config.sharepoint_attestati_url})
+
+    def patch(self, request):
+        if request.user.livello_accesso not in ('admin', 'admin_ehs'):
+            return Response({'detail': 'Solo Admin/EHS Admin possono modificare la configurazione EHS.'}, status=403)
+        url = (request.data.get('sharepoint_attestati_url') or '').strip()
+        if url and not url.lower().startswith('https://'):
+            return Response({'detail': 'Il link deve iniziare con https://'}, status=400)
+        config = EHSConfigurazione.get()
+        config.sharepoint_attestati_url = url
+        config.save()
+        return Response({'sharepoint_attestati_url': config.sharepoint_attestati_url})

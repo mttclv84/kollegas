@@ -10,15 +10,6 @@ class EHSCorso(models.Model):
     # Se valorizzato, alla chiusura aula si calcola la scadenza per ogni
     # partecipante presente. Se null, il corso non prevede scadenza.
     scadenza_giorni = models.PositiveIntegerField(null=True, blank=True)
-    # Nullable solo per compatibilità con corsi creati prima dell'introduzione di
-    # questo campo (es. "SCALE"): l'API impone la scelta per ogni nuovo corso e per
-    # qualunque modifica successiva di uno esistente (vedi EHSCorsoSerializer).
-    fornitore = models.ForeignKey(
-        'users.User', on_delete=models.PROTECT, null=True, blank=True,
-        related_name='corsi_ehs_gestiti',
-        limit_choices_to={'livello_accesso': 'fornitore'},
-    )
-
     class Meta:
         verbose_name = 'Corso EHS'
         verbose_name_plural = 'Corsi EHS'
@@ -28,6 +19,43 @@ class EHSCorso(models.Model):
         return self.nome
 
 
+class EHSOffertaCorso(models.Model):
+    """Abbinamento corso ↔ fornitore che lo eroga, con il perimetro di negozi serviti.
+    Un corso può essere erogato da più fornitori e un fornitore può erogare più corsi;
+    ogni abbinamento vale per tutti i negozi oppure solo per quelli elencati. Un
+    fornitore fuori dal perimetro del negozio è richiedibile solo con una richiesta
+    eccezionale, che l'EHS Admin approva o rifiuta."""
+    corso = models.ForeignKey(EHSCorso, on_delete=models.CASCADE, related_name='offerte')
+    fornitore = models.ForeignKey(
+        'users.User', on_delete=models.PROTECT, related_name='ehs_offerte',
+        limit_choices_to={'livello_accesso': 'fornitore'},
+    )
+    tutti_negozi = models.BooleanField(default=True)
+    negozi = models.ManyToManyField('stores.Store', blank=True, related_name='ehs_offerte')
+
+    class Meta:
+        verbose_name = 'Offerta Corso EHS'
+        verbose_name_plural = 'Offerte Corsi EHS'
+        unique_together = ('corso', 'fornitore')
+
+    def __str__(self):
+        return f'{self.corso} — {self.fornitore}'
+
+
+class EHSConfigurazione(models.Model):
+    """Impostazioni globali della sezione EHS (riga unica, pk=1)."""
+    sharepoint_attestati_url = models.URLField(max_length=500, blank=True)
+
+    class Meta:
+        verbose_name = 'Configurazione EHS'
+        verbose_name_plural = 'Configurazione EHS'
+
+    @classmethod
+    def get(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+
 class EHSSessione(models.Model):
     # NB: la sessione diventa CONFERMATA nel momento in cui lo store accetta la
     # data proposta dal fornitore (o il fornitore accetta una contro-proposta):
@@ -35,12 +63,19 @@ class EHSSessione(models.Model):
     # un passaggio separato di "conferma". La chiusura (marcatura presenze +
     # upload registro compilato) avviene direttamente da CONFERMATA.
     STATO_CHOICES = [
+        ('IN_APPROVAZIONE', 'Richiesta eccezionale in approvazione EHS'),
         ('RICHIESTA_INVIATA', 'Richiesta inviata dallo store'),
+        ('NON_DISPONIBILE', 'Fornitore non disponibile'),
         ('DATA_PROPOSTA', 'Data proposta dal fornitore'),
         ('DATA_CONTROPROPOSTA', 'Nuova data proposta dallo store'),
         ('CONFERMATA', 'Confermata'),
         ('COMPLETATA', 'Completata'),
         ('ANNULLATA', 'Annullata'),
+        ('RIFIUTATA', 'Richiesta eccezionale rifiutata'),
+    ]
+    MODALITA_CHOICES = [
+        ('PRESENZA', 'In presenza'),
+        ('ONLINE', 'Online'),
     ]
 
     corso = models.ForeignKey(EHSCorso, on_delete=models.PROTECT, related_name='sessioni')
@@ -55,6 +90,21 @@ class EHSSessione(models.Model):
     )
 
     stato = models.CharField(max_length=30, choices=STATO_CHOICES, default='RICHIESTA_INVIATA')
+
+    modalita = models.CharField(max_length=10, choices=MODALITA_CHOICES, default='PRESENZA')
+    # Link alla call, inserito dal fornitore per le sessioni online.
+    link_online = models.URLField(max_length=500, blank=True)
+
+    # Richiesta eccezionale: lo store chiede un fornitore fuori dal perimetro del
+    # proprio negozio. Il fornitore resta in `fornitore_richiesto` (invisibile al
+    # fornitore stesso) finché l'EHS Admin non approva; solo allora diventa `fornitore`.
+    eccezionale = models.BooleanField(default=False)
+    fornitore_richiesto = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='ehs_sessioni_richieste_eccezionali',
+        limit_choices_to={'livello_accesso': 'fornitore'},
+    )
+    motivazione_eccezione = models.TextField(blank=True)
 
     data_proposta = models.DateTimeField(null=True, blank=True)
     data_confermata = models.DateTimeField(null=True, blank=True)
@@ -74,7 +124,6 @@ class EHSSessione(models.Model):
     data_suggerita_store = models.DateTimeField(null=True, blank=True)
 
     registro_file = models.FileField(upload_to='ehs/registri/', null=True, blank=True)
-    registro_compilato_file = models.FileField(upload_to='ehs/registri_compilati/', null=True, blank=True)
 
     calendario_evento = models.OneToOneField(
         'events.Evento', on_delete=models.SET_NULL, null=True, blank=True,
@@ -89,6 +138,14 @@ class EHSSessione(models.Model):
         limit_choices_to={'livello_accesso': 'fornitore'},
     )
 
+    # Attestati caricati dal fornitore sulla cartella SharePoint aziendale, anche
+    # dopo la chiusura dell'aula: in app resta solo la conferma dell'avvenuto caricamento.
+    attestati_caricati_il = models.DateTimeField(null=True, blank=True)
+    attestati_caricati_da = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='ehs_attestati_caricati',
+    )
+
     creata_il = models.DateTimeField(auto_now_add=True)
     aggiornata_il = models.DateTimeField(auto_now=True)
     note = models.TextField(blank=True)
@@ -100,6 +157,27 @@ class EHSSessione(models.Model):
 
     def __str__(self):
         return f'{self.corso.codice} — {self.negozio} ({self.stato})'
+
+
+class EHSSessioneDocumento(models.Model):
+    """File caricati dal fornitore alla chiusura aula (registro compilato e
+    qualunque altro documento): più file per sessione."""
+    sessione = models.ForeignKey(EHSSessione, on_delete=models.CASCADE, related_name='documenti')
+    file = models.FileField(upload_to='ehs/registri_compilati/')
+    nome_originale = models.CharField(max_length=255, blank=True)
+    caricato_il = models.DateTimeField(auto_now_add=True)
+    caricato_da = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='ehs_documenti_caricati',
+    )
+
+    class Meta:
+        verbose_name = 'Documento Sessione EHS'
+        verbose_name_plural = 'Documenti Sessioni EHS'
+        ordering = ['caricato_il', 'id']
+
+    def __str__(self):
+        return self.nome_originale or self.file.name
 
 
 class EHSPartecipante(models.Model):

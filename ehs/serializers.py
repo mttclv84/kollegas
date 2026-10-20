@@ -1,9 +1,11 @@
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from rest_framework import serializers
 
 from events.models import Evento
 
-from .models import EHSCorso, EHSPartecipante, EHSSessione, EHSSessioneLog
+from .models import EHSCorso, EHSOffertaCorso, EHSPartecipante, EHSSessione, EHSSessioneDocumento, EHSSessioneLog
+from .services import cancellazione_consentita
 
 User = get_user_model()
 
@@ -22,33 +24,85 @@ class EHSFornitoreSerializer(serializers.ModelSerializer):
         ]
 
 
-class EHSCorsoSerializer(serializers.ModelSerializer):
+class EHSOffertaCorsoSerializer(serializers.ModelSerializer):
     fornitore_nome = serializers.SerializerMethodField()
+    negozi_nomi = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EHSOffertaCorso
+        fields = ['id', 'fornitore', 'fornitore_nome', 'tutti_negozi', 'negozi', 'negozi_nomi']
+
+    def get_fornitore_nome(self, obj):
+        return obj.fornitore.fornitore_ragione_sociale or obj.fornitore.nome_completo
+
+    def get_negozi_nomi(self, obj):
+        return [n.nome for n in obj.negozi.all()]
+
+
+class EHSCorsoSerializer(serializers.ModelSerializer):
+    """Corso con i suoi abbinamenti fornitore (offerte): ogni corso deve avere almeno
+    un fornitore, ciascuno valido per tutti i negozi o per un elenco di negozi.
+    In scrittura `offerte` sostituisce interamente gli abbinamenti esistenti."""
+    offerte = EHSOffertaCorsoSerializer(many=True, required=False)
+    fornitori_nomi = serializers.SerializerMethodField()
 
     class Meta:
         model = EHSCorso
         fields = [
             'id', 'codice', 'nome', 'durata_ore', 'descrizione', 'attivo', 'scadenza_giorni',
-            'fornitore', 'fornitore_nome',
+            'offerte', 'fornitori_nomi',
         ]
         # Il codice è generato automaticamente alla creazione (EHS + 4 cifre random) e
-        # non è mai modificabile da input client, né in creazione né in modifica. Il
-        # fornitore è invece obbligatorio: ogni corso deve essere abbinato a un
-        # fornitore EHS (scelto dal menù) per poterlo salvare o modificare.
-        extra_kwargs = {
-            'codice': {'read_only': True},
-            'fornitore': {'required': True, 'allow_null': False},
-        }
+        # non è mai modificabile da input client, né in creazione né in modifica.
+        extra_kwargs = {'codice': {'read_only': True}}
 
-    def get_fornitore_nome(self, obj):
-        if not obj.fornitore_id:
-            return None
-        return obj.fornitore.fornitore_ragione_sociale or obj.fornitore.nome_completo
+    def get_fornitori_nomi(self, obj):
+        return [o.fornitore.fornitore_ragione_sociale or o.fornitore.nome_completo for o in obj.offerte.all()]
 
-    def validate_fornitore(self, value):
-        if value.livello_accesso != 'fornitore':
-            raise serializers.ValidationError('Il fornitore selezionato non è un utente di livello Fornitore EHS.')
+    def validate_offerte(self, value):
+        if not value:
+            raise serializers.ValidationError('Abbina almeno un fornitore al corso.')
+        fornitori = [o['fornitore'] for o in value]
+        if len({f.pk for f in fornitori}) != len(fornitori):
+            raise serializers.ValidationError('Lo stesso fornitore è abbinato più volte.')
+        for o in value:
+            f = o['fornitore']
+            if f.livello_accesso != 'fornitore':
+                raise serializers.ValidationError('Il fornitore selezionato non è un utente di livello Fornitore EHS.')
+            if not o.get('tutti_negozi', True) and not o.get('negozi'):
+                raise serializers.ValidationError(
+                    f'Seleziona almeno un negozio per {f.fornitore_ragione_sociale or f.nome_completo} '
+                    f'oppure abilitalo per tutti i negozi.'
+                )
         return value
+
+    def validate(self, attrs):
+        if self.instance is None and 'offerte' not in attrs:
+            raise serializers.ValidationError({'offerte': 'Abbina almeno un fornitore al corso.'})
+        return attrs
+
+    def _salva_offerte(self, corso, offerte):
+        corso.offerte.all().delete()
+        for o in offerte:
+            negozi = o.pop('negozi', [])
+            offerta = EHSOffertaCorso.objects.create(corso=corso, **o)
+            if not offerta.tutti_negozi:
+                offerta.negozi.set(negozi)
+
+    def create(self, validated_data):
+        offerte = validated_data.pop('offerte', [])
+        with transaction.atomic():
+            corso = super().create(validated_data)
+            self._salva_offerte(corso, offerte)
+        return corso
+
+    def update(self, instance, validated_data):
+        offerte = validated_data.pop('offerte', None)
+        with transaction.atomic():
+            corso = super().update(instance, validated_data)
+            if offerte is not None:
+                self._salva_offerte(corso, offerte)
+        return corso
 
 
 class EHSPartecipanteSerializer(serializers.ModelSerializer):
@@ -64,16 +118,22 @@ class EHSPartecipanteSerializer(serializers.ModelSerializer):
             'attestato_file', 'attestato_caricato_il',
             'completato', 'completato_il', 'scadenza_formazione',
         ]
+        read_only_fields = [
+            'iscritto_il', 'attestato_file', 'attestato_caricato_il',
+            'completato', 'completato_il', 'scadenza_formazione',
+        ]
 
     def get_utente_store_nome(self, obj):
         store = obj.utente.store
         if not store:
             return None
         return store.codice_store or store.nome
-        read_only_fields = [
-            'iscritto_il', 'attestato_file', 'attestato_caricato_il',
-            'completato', 'completato_il', 'scadenza_formazione',
-        ]
+
+
+class EHSSessioneDocumentoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EHSSessioneDocumento
+        fields = ['id', 'nome_originale', 'caricato_il']
 
 
 class EHSSessioneLogSerializer(serializers.ModelSerializer):
@@ -87,7 +147,8 @@ class EHSSessioneLogSerializer(serializers.ModelSerializer):
 class EHSSessioneListSerializer(serializers.ModelSerializer):
     corso_nome = serializers.CharField(source='corso.nome', read_only=True)
     negozio_nome = serializers.CharField(source='negozio.nome', read_only=True)
-    fornitore_nome = serializers.CharField(source='fornitore.nome_completo', read_only=True, default=None)
+    fornitore_nome = serializers.SerializerMethodField()
+    fornitore_richiesto_nome = serializers.SerializerMethodField()
     stato_display = serializers.CharField(source='get_stato_display', read_only=True)
     partecipanti_count = serializers.SerializerMethodField()
 
@@ -98,26 +159,43 @@ class EHSSessioneListSerializer(serializers.ModelSerializer):
             'fornitore', 'fornitore_nome', 'stato', 'stato_display',
             'data_proposta', 'data_confermata', 'data_suggerita_store', 'durata_ore',
             'docente_nome', 'contatto_negozio_nome', 'partecipanti_previsti', 'partecipanti_count',
-            'creata_il',
+            'modalita', 'eccezionale', 'fornitore_richiesto', 'fornitore_richiesto_nome',
+            'attestati_caricati_il', 'creata_il',
         ]
 
     def get_partecipanti_count(self, obj):
         return obj.partecipanti.count()
 
+    def get_fornitore_nome(self, obj):
+        return (obj.fornitore.fornitore_ragione_sociale or obj.fornitore.nome_completo) if obj.fornitore_id else None
+
+    def get_fornitore_richiesto_nome(self, obj):
+        f = obj.fornitore_richiesto
+        return (f.fornitore_ragione_sociale or f.nome_completo) if f else None
+
 
 class EHSSessioneDetailSerializer(EHSSessioneListSerializer):
     creata_da_nome = serializers.CharField(source='creata_da.nome_completo', read_only=True)
     partecipanti = EHSPartecipanteSerializer(many=True, read_only=True)
+    documenti = EHSSessioneDocumentoSerializer(many=True, read_only=True)
     log = EHSSessioneLogSerializer(many=True, read_only=True)
+    cancellazione_consentita = serializers.SerializerMethodField()
 
     class Meta(EHSSessioneListSerializer.Meta):
         fields = EHSSessioneListSerializer.Meta.fields + [
             'creata_da', 'creata_da_nome',
             'docente_telefono', 'contatto_negozio_telefono',
-            'registro_file', 'registro_compilato_file',
+            'registro_file', 'link_online', 'motivazione_eccezione',
             'calendario_evento', 'data_chiusura', 'chiusa_da', 'note',
-            'partecipanti', 'log',
+            'partecipanti', 'documenti', 'log', 'cancellazione_consentita',
         ]
+
+    def get_cancellazione_consentita(self, obj):
+        """Regola dei 7 giorni valutata per l'utente corrente (passato nel context)."""
+        request = self.context.get('request')
+        if not request:
+            return True
+        return cancellazione_consentita(obj, request.user)
 
 
 class EHSCalendarioEventoSerializer(serializers.ModelSerializer):

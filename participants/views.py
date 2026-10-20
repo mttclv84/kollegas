@@ -10,6 +10,13 @@ from .serializers import IscrizioneSerializer, RichiestaCancellazioneSerializer
 from users.permissions import IsAdminOrHO, IsAdminOrHOOrArea, CanManageUsers, IsAdminOrHOOrAreaEHS
 
 GIORNI_BLOCCO = 20
+# Per le formazioni EHS lo store può cancellare un iscritto fino a 7 giorni prima
+# (vedi ehs.services.GIORNI_LIMITE_CANCELLAZIONE); dopo serve una richiesta di cancellazione.
+GIORNI_BLOCCO_EHS = 7
+
+
+def giorni_blocco(evento):
+    return GIORNI_BLOCCO_EHS if evento.is_ehs else GIORNI_BLOCCO
 
 
 class IscrizioneListCreateView(generics.ListCreateAPIView):
@@ -72,9 +79,10 @@ class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
         if user.livello_accesso == 'store':
             iscrizione = self.get_object()
             delta = (iscrizione.evento.data - date.today()).days
-            if delta < GIORNI_BLOCCO:
+            soglia = giorni_blocco(iscrizione.evento)
+            if delta < soglia:
                 return Response(
-                    {'detail': 'Eliminazione bloccata: mancano meno di 20 giorni all\'evento. Invia una richiesta di cancellazione.'},
+                    {'detail': f'Eliminazione bloccata: mancano meno di {soglia} giorni all\'evento. Invia una richiesta di cancellazione.'},
                     status=status.HTTP_403_FORBIDDEN
                 )
         return super().destroy(request, *args, **kwargs)
@@ -183,8 +191,9 @@ class RichiestaCancellazioneListCreateView(APIView):
             return Response({'detail': 'Iscrizione non di questo store.'}, status=403)
 
         delta = (iscrizione.evento.data - date.today()).days
-        if delta >= GIORNI_BLOCCO:
-            return Response({'detail': 'Puoi eliminare direttamente (più di 20 giorni all\'evento).'}, status=400)
+        soglia = giorni_blocco(iscrizione.evento)
+        if delta >= soglia:
+            return Response({'detail': f'Puoi eliminare direttamente (più di {soglia} giorni all\'evento).'}, status=400)
 
         richiesta = RichiestaCancellazione.objects.create(
             iscrizione=iscrizione,

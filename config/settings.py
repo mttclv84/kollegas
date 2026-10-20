@@ -126,9 +126,28 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
+# --- Email ---
+# Le notifiche EHS (nuove richieste al fornitore, date proposte, conferme con link alla
+# call, ecc.) partono via SMTP quando EMAIL_HOST è impostato (es. Office 365:
+# smtp.office365.com, porta 587, TLS). Senza EMAIL_HOST le email vengono solo stampate
+# in console: l'invio non è mai bloccante per le azioni in app (vedi ehs/services.py).
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+if EMAIL_HOST:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+    EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+    EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+    EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER if EMAIL_HOST else 'noreply@kollegas.it')
+# URL del frontend, usato nei link delle email.
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://kollegas.it')
+
 # --- EHS ---
-# Destinatario fisso per la copia automatica degli attestati (§5bis). Nessun EMAIL_BACKEND
-# è configurato di proposito (vedi ricognizione step 1): finché non viene impostato un SMTP
-# reale via env var (EMAIL_HOST, ecc.), l'invio fallisce in modo innocuo e viene loggato,
-# senza bloccare la chiusura aula (vedi ehs/services.py: invia_email_attestato).
+# Destinatario fisso per la copia automatica dei documenti di chiusura aula e
+# dell'avviso di attestati caricati (§5bis).
 EHS_EMAIL_ATTESTATI = os.getenv('EHS_EMAIL_ATTESTATI', 'vspampinato@primark.it')
+# Interruttore generale delle email EHS (notifiche e invio documenti): per ora
+# bloccate. Per attivarle impostare EHS_EMAIL_ATTIVE=True (oltre all'SMTP).
+EHS_EMAIL_ATTIVE = os.getenv('EHS_EMAIL_ATTIVE', 'False') == 'True'
