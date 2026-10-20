@@ -4,7 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from .models import Store, StoreCluster, Area
 from .serializers import StoreSerializer, StoreListSerializer, StoreClusterSerializer, AreaSerializer
-from users.permissions import IsAdmin, IsAdminOrHO, IsAdminOrHOEHS
+from users.permissions import IsAdmin, IsAdminOrHO, IsAdminOrHOEHS, IsAdminOrHOOrAreaEHS
 
 
 def _sync_store_user(store, password=None):
@@ -284,7 +284,7 @@ class CompletamentoItaliaView(APIView):
 
 
 class CompletamentoAreaDetailView(APIView):
-    permission_classes = [IsAdminOrHOEHS]
+    permission_classes = [IsAdminOrHOOrAreaEHS]
 
     def get(self, request, numero):
         from users.models import User
