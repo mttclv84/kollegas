@@ -30,7 +30,11 @@ DUPLICATI = {
     '1239': '709',   # Labalestra Domenica
 }
 RUOLO_FORZATO = {'709': 'Department Manager'}
-LIVELLO_FORZATO = {'268': 'base', '942': 'base'}  # Mariolu Giulia, Campagnola Veronica
+LIVELLO_FORZATO = {
+    '268': 'base',  # Mariolu Giulia
+    '942': 'base',  # Campagnola Veronica
+    '909': 'ho',    # Giusti Greta Natalia (promossa HO nel portale nuovo)
+}
 NOME_FORZATO = {'1349': ('Zappulla', 'Noemi')}    # cognome/nome invertiti nel vecchio portale
 RUOLO_HO_FISSO = {'596'}                          # Nardi Emanuele: resta Head Office
 DA_DISATTIVARE = {'551'}                          # Vollero Salvatore
