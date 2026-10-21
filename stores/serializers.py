@@ -9,7 +9,20 @@ class StoreClusterSerializer(serializers.ModelSerializer):
         read_only_fields = ['updated_at']
 
 
-class StoreSerializer(serializers.ModelSerializer):
+class PasswordPortaleNascostaMixin:
+    """La password del portale negozio è visibile solo ad Admin e HO (come il popup
+    'Visualizza password' in Gestione Account); per gli altri utenti non viene inviata."""
+    LIVELLI_PASSWORD = ('admin', 'ho')
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        if not request or getattr(request.user, 'livello_accesso', None) not in self.LIVELLI_PASSWORD:
+            data.pop('portale_password', None)
+        return data
+
+
+class StoreSerializer(PasswordPortaleNascostaMixin, serializers.ModelSerializer):
     cluster = StoreClusterSerializer(read_only=True)
     collaboratori_count = serializers.SerializerMethodField()
 
@@ -22,7 +35,7 @@ class StoreSerializer(serializers.ModelSerializer):
         return obj.collaboratori.filter(is_active=True).count()
 
 
-class StoreListSerializer(serializers.ModelSerializer):
+class StoreListSerializer(PasswordPortaleNascostaMixin, serializers.ModelSerializer):
     collaboratori_count = serializers.SerializerMethodField()
 
     class Meta:
