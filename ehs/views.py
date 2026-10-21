@@ -187,7 +187,7 @@ class EHSSessioneListCreateView(APIView):
             return Response({'detail': 'Corso e contatto negozio sono obbligatori.'}, status=400)
 
         try:
-            corso = EHSCorso.objects.select_related('fornitore').get(pk=corso_id, attivo=True)
+            corso = EHSCorso.objects.get(pk=corso_id, attivo=True)
         except EHSCorso.DoesNotExist:
             return Response({'detail': 'Corso non trovato.'}, status=404)
 
