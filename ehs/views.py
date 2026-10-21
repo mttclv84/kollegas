@@ -540,16 +540,20 @@ class EHSNotificaScadenzaView(APIView):
             return Response([])
         qs = EHSNotificaScadenza.objects.filter(
             negozio_destinatario=user.store, letta=False
-        ).select_related('partecipante__utente', 'partecipante__sessione__corso').order_by('creata_il')
-        return Response([
-            {
-                'id': n.id,
-                'corso_nome': n.partecipante.sessione.corso.nome,
-                'utente_nome': n.partecipante.utente.nome_completo,
-                'scadenza_formazione': n.partecipante.scadenza_formazione,
-            }
-            for n in qs
-        ])
+        ).select_related(
+            'formazione__utente', 'formazione__corso', 'partecipante__utente', 'partecipante__sessione__corso',
+        ).order_by('creata_il')
+        risultato = []
+        for n in qs:
+            if n.formazione:
+                corso, utente, scadenza = n.formazione.corso, n.formazione.utente, n.formazione.scadenza
+            else:  # notifiche generate prima del registro formazioni
+                corso, utente, scadenza = n.partecipante.sessione.corso, n.partecipante.utente, n.partecipante.scadenza_formazione
+            risultato.append({
+                'id': n.id, 'corso_nome': corso.nome, 'utente_nome': utente.nome_completo,
+                'scadenza_formazione': scadenza,
+            })
+        return Response(risultato)
 
     def patch(self, request, pk):
         try:

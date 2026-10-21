@@ -674,83 +674,98 @@ def segna_attestati_caricati(sessione, utente):
 
 # --- Scadenze ------------------------------------------------------------------
 
+def _ultime_formazioni_con_scadenza(negozio=None):
+    """Per ogni utente attivo e corso, l'ultima formazione registrata (aula, import o
+    manuale), se ha una scadenza. Una formazione rinnovata in seguito non conta più."""
+    from .models import EHSFormazione
+
+    qs = (EHSFormazione.objects
+          .filter(utente__is_active=True)
+          .select_related('utente__store', 'corso')
+          .order_by('data'))
+    if negozio is not None:
+        qs = qs.filter(utente__store=negozio)
+    ultime = {}
+    for f in qs:
+        ultime[(f.utente_id, f.corso_id)] = f  # ordinate per data: resta l'ultima
+    return [f for f in ultime.values() if f.scadenza]
+
+
 def scadenze_in_arrivo(negozio=None, giorni=GIORNI_ALERT_SCADENZA):
-    """Per ogni utente attivo e corso, l'ultima formazione completata con scadenza
-    entro `giorni` (comprese quelle già scadute). Una formazione rinnovata in seguito
-    non compare più. Il negozio considerato è quello dove l'utente è in forza oggi
+    """Formazioni (dal registro) con scadenza entro `giorni`, comprese quelle già
+    scadute. Il negozio considerato è quello dove l'utente è in forza oggi
     (`User.store`). Ritorna una lista di dict ordinata per giorni mancanti."""
     from .models import EHSPartecipante
 
     oggi = timezone.now().date()
-    qs = (EHSPartecipante.objects
-          .filter(completato=True, scadenza_formazione__isnull=False, utente__is_active=True)
-          .select_related('utente__store', 'sessione__corso'))
-    if negozio is not None:
-        qs = qs.filter(utente__store=negozio)
-
-    ultime = {}
-    for p in qs:
-        chiave = (p.utente_id, p.sessione.corso_id)
-        if chiave not in ultime or p.scadenza_formazione > ultime[chiave].scadenza_formazione:
-            ultime[chiave] = p
-
     soglia = oggi + timedelta(days=giorni)
-    in_scadenza = [p for p in ultime.values() if p.scadenza_formazione <= soglia]
+    in_scadenza = [f for f in _ultime_formazioni_con_scadenza(negozio) if f.scadenza <= soglia]
     if not in_scadenza:
         return []
 
     # Rinnovo già pianificato: l'utente è iscritto a una sessione futura dello stesso corso.
     pianificati = set(EHSPartecipante.objects.filter(
         sessione__stato='CONFERMATA', sessione__data_confermata__gte=timezone.now(),
-        utente_id__in={p.utente_id for p in in_scadenza},
+        utente_id__in={f.utente_id for f in in_scadenza},
     ).values_list('utente_id', 'sessione__corso_id'))
 
     risultato = [
         {
-            'partecipante_id': p.id,
-            'utente_id': p.utente_id,
-            'utente_nome': p.utente.nome_completo,
-            'negozio_id': p.utente.store_id,
-            'negozio_nome': p.utente.store.nome if p.utente.store else None,
-            'corso_id': p.sessione.corso_id,
-            'corso_nome': p.sessione.corso.nome,
-            'scadenza_formazione': p.scadenza_formazione,
-            'giorni_mancanti': (p.scadenza_formazione - oggi).days,
-            'rinnovo_pianificato': (p.utente_id, p.sessione.corso_id) in pianificati,
+            'formazione_id': f.id,
+            'utente_id': f.utente_id,
+            'utente_nome': f.utente.nome_completo,
+            'negozio_id': f.utente.store_id,
+            'negozio_nome': f.utente.store.nome if f.utente.store else None,
+            'corso_id': f.corso_id,
+            'corso_nome': f.corso.nome,
+            'scadenza_formazione': f.scadenza,
+            'giorni_mancanti': (f.scadenza - oggi).days,
+            'rinnovo_pianificato': (f.utente_id, f.corso_id) in pianificati,
         }
-        for p in in_scadenza
+        for f in in_scadenza
     ]
     risultato.sort(key=lambda r: (r['giorni_mancanti'], r['utente_nome']))
     return risultato
 
 
 def genera_notifiche_scadenza():
-    """Job giornaliero (§8bis): genera una notifica per il negozio dove l'utente è
-    attualmente in forza (`User.store`, non necessariamente il negozio dove ha fatto
-    il corso — es. trasferimenti) quando mancano GIORNI_ALERT_SCADENZA giorni o meno
-    alla scadenza. Usa `<=` invece dell'uguaglianza esatta per coprire eventuali gap
-    se il job salta un giorno; l'idempotenza è garantita dal vincolo OneToOne su
-    `partecipante`, quindi eseguire il job più volte è sempre sicuro.
+    """Genera una notifica per il negozio dove l'utente è attualmente in forza
+    (`User.store`, non necessariamente quello dove ha fatto il corso) per ogni
+    formazione del registro che scade entro GIORNI_ALERT_SCADENZA giorni. Le
+    formazioni già scadute non generano popup (restano in rosso nel pannello
+    Scadenze e nel Completamento): così un import storico non inonda i negozi.
+    Idempotente grazie al vincolo OneToOne su `formazione`.
     Ritorna il numero di notifiche create."""
-    from .models import EHSNotificaScadenza, EHSPartecipante
+    from .models import EHSNotificaScadenza
 
-    soglia = timezone.now().date() + timedelta(days=GIORNI_ALERT_SCADENZA)
-    partecipanti = EHSPartecipante.objects.filter(
-        scadenza_formazione__isnull=False,
-        scadenza_formazione__lte=soglia,
-        completato=True,
-    ).select_related('utente', 'sessione__corso')
-
+    oggi = timezone.now().date()
+    soglia = oggi + timedelta(days=GIORNI_ALERT_SCADENZA)
     creati = 0
-    for p in partecipanti:
-        negozio_attuale = p.utente.store
-        if not negozio_attuale:
+    for f in _ultime_formazioni_con_scadenza():
+        if not (oggi <= f.scadenza <= soglia) or not f.utente.store_id:
             continue
         _, created = EHSNotificaScadenza.objects.get_or_create(
-            partecipante=p, defaults={'negozio_destinatario': negozio_attuale}
+            formazione=f, defaults={'negozio_destinatario': f.utente.store}
         )
-        if created:
-            creati += 1
+        creati += created
+    return creati
+
+
+def esegui_automatismi_giornalieri():
+    """Automatismi EHS da eseguire una volta al giorno. Non c'è uno schedulatore:
+    li fa partire il primo accesso del giorno (vedi ehs.middleware). L'update
+    condizionale garantisce che, anche con più processi, parta una sola volta."""
+    from .models import EHSConfigurazione
+
+    oggi = timezone.now().date()
+    EHSConfigurazione.get()
+    vinto = (EHSConfigurazione.objects.filter(pk=1)
+             .exclude(ultimo_controllo_giornaliero=oggi)
+             .update(ultimo_controllo_giornaliero=oggi))
+    if not vinto:
+        return None
+    creati = genera_notifiche_scadenza()
+    logger.info('Automatismi EHS giornalieri: %s notifiche di scadenza create', creati)
     return creati
 
 
@@ -894,7 +909,9 @@ def riepiloga(stati_persone, corsi_ids):
 
 
 def _corsi_json(corsi):
-    return [{'id': c.id, 'nome': c.nome, 'durata_ore': c.durata_ore} for c in corsi]
+    # richiedibile: ha almeno un fornitore, quindi si può chiedere un'aula da 'Nuova Richiesta'.
+    return [{'id': c.id, 'nome': c.nome, 'durata_ore': c.durata_ore, 'richiedibile': c.offerte.exists()}
+            for c in corsi]
 
 
 def completamento_obbligatori():

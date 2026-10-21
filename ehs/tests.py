@@ -199,23 +199,37 @@ class EHSFlussiTest(TestCase):
     # --- scadenze ---
 
     def test_scadenze_45_giorni_solo_ultima_formazione(self):
-        sessione = self._conferma(self._crea(), giorni=10)
+        from .models import EHSFormazione
         oggi = timezone.now().date()
-        vecchia = EHSPartecipante.objects.create(
-            sessione=sessione, utente=self.collaboratore, completato=True,
-            scadenza_formazione=oggi + timedelta(days=20))
+        # Corso con validità 365 giorni: fatto 345 giorni fa, scade tra 20.
+        EHSFormazione.objects.create(utente=self.collaboratore, corso=self.corso,
+                                     data=oggi - timedelta(days=345), fonte='import')
+        sessione = self._conferma(self._crea(), giorni=10)
+        EHSPartecipante.objects.create(sessione=sessione, utente=self.collaboratore)
         r = self._client(self.store_user).get('/api/ehs/scadenze/').json()
         self.assertEqual(len(r), 1)
         self.assertEqual(r[0]['giorni_mancanti'], 20)
         self.assertTrue(r[0]['rinnovo_pianificato'])
         # Un rinnovo con scadenza lontana fa sparire l'alert
-        altra = EHSSessione.objects.create(corso=self.corso, negozio=self.negozio, creata_da=self.store_user,
-                                           durata_ore=4, contatto_negozio_nome='x', contatto_negozio_telefono='',
-                                           stato='COMPLETATA')
-        EHSPartecipante.objects.create(sessione=altra, utente=self.collaboratore, completato=True,
-                                       scadenza_formazione=oggi + timedelta(days=300))
+        EHSFormazione.objects.create(utente=self.collaboratore, corso=self.corso,
+                                     data=oggi - timedelta(days=65), fonte='manuale')
         self.assertEqual(self._client(self.store_user).get('/api/ehs/scadenze/').json(), [])
-        self.assertTrue(vecchia.pk)
+
+    def test_notifiche_scadenza_dal_registro_una_volta_al_giorno(self):
+        from .models import EHSConfigurazione, EHSFormazione, EHSNotificaScadenza
+        oggi = timezone.now().date()
+        EHSFormazione.objects.create(utente=self.collaboratore, corso=self.corso,
+                                     data=oggi - timedelta(days=345), fonte='import')
+        # Già scaduta: resta nel pannello ma non genera popup.
+        altro = EHSCorso.objects.create(codice='EHS0002', nome='Primo soccorso', durata_ore=4, scadenza_giorni=365)
+        EHSFormazione.objects.create(utente=self.collaboratore, corso=altro,
+                                     data=oggi - timedelta(days=400), fonte='import')
+        EHSConfigurazione.objects.update_or_create(pk=1, defaults={'ultimo_controllo_giornaliero': None})
+        self.assertEqual(services.esegui_automatismi_giornalieri(), 1)
+        self.assertIsNone(services.esegui_automatismi_giornalieri())  # stesso giorno: non riparte
+        self.assertEqual(EHSNotificaScadenza.objects.count(), 1)
+        popup = self._client(self.store_user).get('/api/ehs/notifiche-scadenza/').json()
+        self.assertEqual([(p['corso_nome'], p['utente_nome']) for p in popup], [('Antincendio', 'Rossi Mario')])
 
     # --- gestione corsi con offerte ---
 

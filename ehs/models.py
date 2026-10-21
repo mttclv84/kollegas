@@ -47,6 +47,9 @@ class EHSOffertaCorso(models.Model):
 class EHSConfigurazione(models.Model):
     """Impostazioni globali della sezione EHS (riga unica, pk=1)."""
     sharepoint_attestati_url = models.URLField(max_length=500, blank=True)
+    # Giorno dell'ultima esecuzione degli automatismi giornalieri (avvisi di scadenza):
+    # partono al primo accesso del giorno, non essendoci uno schedulatore.
+    ultimo_controllo_giornaliero = models.DateField(null=True, blank=True)
 
     class Meta:
         verbose_name = 'Configurazione EHS'
@@ -228,8 +231,13 @@ class EHSSessioneLog(models.Model):
 
 
 class EHSNotificaScadenza(models.Model):
+    # Le notifiche nascono dal registro formazioni; `partecipante` resta per quelle
+    # generate prima del registro (solo aule Kollegas).
+    formazione = models.OneToOneField(
+        'EHSFormazione', on_delete=models.CASCADE, null=True, blank=True, related_name='notifica_scadenza'
+    )
     partecipante = models.OneToOneField(
-        EHSPartecipante, on_delete=models.CASCADE, related_name='notifica_scadenza'
+        EHSPartecipante, on_delete=models.CASCADE, null=True, blank=True, related_name='notifica_scadenza'
     )
     negozio_destinatario = models.ForeignKey('stores.Store', on_delete=models.CASCADE, related_name='ehs_notifiche_scadenza')
     creata_il = models.DateTimeField(auto_now_add=True)
@@ -242,7 +250,7 @@ class EHSNotificaScadenza(models.Model):
         ordering = ['-creata_il']
 
     def __str__(self):
-        return f'Scadenza {self.partecipante} — {self.negozio_destinatario}'
+        return f'Scadenza {self.formazione or self.partecipante} — {self.negozio_destinatario}'
 
 
 class EHSNotificaSessioneConfermata(models.Model):
