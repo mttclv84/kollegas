@@ -933,3 +933,26 @@ class EHSFormazioneCreateView(generics.CreateAPIView):
 class EHSFormazioneDetailView(generics.DestroyAPIView):
     queryset = EHSFormazione.objects.all()
     permission_classes = [IsAdminEHS]
+
+
+class EHSCompletamentoView(APIView):
+    """GET /ehs/completamento/ — % di completamento della formazione obbligatoria per
+    Italia, area e negozio (Admin, EHS Admin, HO, Area)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.livello_accesso not in ('admin', 'admin_ehs', 'ho', 'area'):
+            return Response(status=403)
+        return Response(services.completamento_obbligatori())
+
+
+class EHSCompletamentoNegozioView(APIView):
+    """GET /ehs/completamento/negozio/<pk>/ — semaforo persona × corso del negozio.
+    Lo store vede solo il proprio."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        negozio = _negozio_consentito(request, pk)
+        if negozio is None or negozio.pk != pk:
+            return Response(status=403)
+        return Response(services.completamento_negozio(negozio))

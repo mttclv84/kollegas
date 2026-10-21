@@ -46,4 +46,6 @@ urlpatterns = [
     path('ehs/persone/<int:pk>/mansioni/', views.EHSPersonaMansioniView.as_view(), name='ehs-persona-mansioni'),
     path('ehs/formazioni/', views.EHSFormazioneCreateView.as_view(), name='ehs-formazione-create'),
     path('ehs/formazioni/<int:pk>/', views.EHSFormazioneDetailView.as_view(), name='ehs-formazione-detail'),
+    path('ehs/completamento/', views.EHSCompletamentoView.as_view(), name='ehs-completamento'),
+    path('ehs/completamento/negozio/<int:pk>/', views.EHSCompletamentoNegozioView.as_view(), name='ehs-completamento-negozio'),
 ]

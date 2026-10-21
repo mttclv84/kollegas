@@ -801,3 +801,155 @@ def imposta_cella_matrice(corso, ruolo=None, mansione=None, stato=None):
         return None
     obbligo, _ = EHSObbligo.objects.update_or_create(**filtro, defaults={'facoltativo': stato == 'facoltativo'})
     return obbligo
+
+
+# --- Completamento formazione obbligatoria --------------------------------------
+
+STATI_CONFORMI = ('valida', 'in_scadenza')
+
+
+def _persone_monitorate_tutte():
+    from django.contrib.auth import get_user_model
+
+    return (get_user_model().objects
+            .filter(is_active=True, store__isnull=False)
+            .exclude(livello_accesso__in=('store', 'fornitore'))
+            .exclude(ruolo__nome__in=RUOLI_ESCLUSI_OBBLIGHI)
+            .select_related('ruolo', 'store')
+            .prefetch_related('ehs_mansioni'))
+
+
+def calcola_stati(persone):
+    """Per ogni persona, lo stato di ciascun corso previsto dalla matrice per il suo
+    ruolo o le sue mansioni: {user_id: {corso_id: {'stato', 'facoltativo', 'scadenza', 'data'}}}.
+    Stati: valida, in_scadenza (entro GIORNI_ALERT_SCADENZA), scaduta, mancante, iscritta
+    (aula confermata già in calendario: vale solo se la formazione non è valida)."""
+    from .models import EHSFormazione, EHSObbligo, EHSPartecipante
+
+    persone = list(persone)
+    ids = [p.id for p in persone]
+    per_ruolo, per_mansione = {}, {}
+    for o in EHSObbligo.objects.filter(corso__attivo=True):
+        if o.ruolo_id:
+            per_ruolo.setdefault(o.ruolo_id, {})[o.corso_id] = o.facoltativo
+        else:
+            per_mansione.setdefault(o.mansione_id, {})[o.corso_id] = o.facoltativo
+
+    ultime = {}
+    for f in EHSFormazione.objects.filter(utente_id__in=ids).order_by('data'):
+        ultime[(f.utente_id, f.corso_id)] = f  # ordinate per data: resta l'ultima
+    iscritte = set(EHSPartecipante.objects.filter(
+        utente_id__in=ids, sessione__stato='CONFERMATA', completato=False,
+    ).values_list('utente_id', 'sessione__corso_id'))
+
+    oggi = timezone.now().date()
+    soglia = oggi + timedelta(days=GIORNI_ALERT_SCADENZA)
+    risultato = {}
+    for p in persone:
+        richiesti = dict(per_ruolo.get(p.ruolo_id, {}))
+        for m in p.ehs_mansioni.all():
+            for corso_id, facoltativo in per_mansione.get(m.id, {}).items():
+                # Se un corso è obbligatorio per il ruolo o per una mansione, prevale l'obbligo.
+                richiesti[corso_id] = richiesti.get(corso_id, True) and facoltativo
+        stati = {}
+        for corso_id, facoltativo in richiesti.items():
+            f = ultime.get((p.id, corso_id))
+            if f is None:
+                stato = 'mancante'
+            elif f.scadenza is None or f.scadenza > soglia:
+                stato = 'valida'
+            elif f.scadenza >= oggi:
+                stato = 'in_scadenza'
+            else:
+                stato = 'scaduta'
+            if stato in ('mancante', 'scaduta') and (p.id, corso_id) in iscritte:
+                stato = 'iscritta'
+            stati[corso_id] = {'stato': stato, 'facoltativo': facoltativo,
+                               'scadenza': f.scadenza if f else None, 'data': f.data if f else None}
+        risultato[p.id] = stati
+    return risultato
+
+
+def riepiloga(stati_persone, corsi_ids):
+    """Conteggi per corso su un insieme di persone: gli obblighi entrano nella
+    percentuale, i facoltativi sono contati a parte ('pronti per la promozione')."""
+    out = {}
+    for corso_id in corsi_ids:
+        c = {'dovuti': 0, 'valida': 0, 'in_scadenza': 0, 'scaduta': 0, 'mancante': 0, 'iscritta': 0,
+             'facoltativi': 0, 'facoltativi_fatti': 0}
+        for stati in stati_persone:
+            s = stati.get(corso_id)
+            if s is None:
+                continue
+            if s['facoltativo']:
+                c['facoltativi'] += 1
+                c['facoltativi_fatti'] += s['stato'] in STATI_CONFORMI
+            else:
+                c['dovuti'] += 1
+                c[s['stato']] += 1
+        c['conformi'] = c['valida'] + c['in_scadenza']
+        c['percentuale'] = round(100 * c['conformi'] / c['dovuti']) if c['dovuti'] else None
+        out[corso_id] = c
+    return out
+
+
+def _corsi_json(corsi):
+    return [{'id': c.id, 'nome': c.nome, 'durata_ore': c.durata_ore} for c in corsi]
+
+
+def completamento_obbligatori():
+    """Riepilogo Italia, per area e per negozio di tutti i corsi della matrice."""
+    from stores.models import Area
+    from .models import EHSCorso
+
+    persone = list(_persone_monitorate_tutte())
+    stati = calcola_stati(persone)
+    corsi = list(EHSCorso.objects.filter(attivo=True, obblighi__isnull=False).distinct().order_by('nome'))
+    corsi_ids = [c.id for c in corsi]
+
+    aree = list(Area.objects.prefetch_related('stores').order_by('numero'))
+    area_di = {}
+    for a in aree:
+        for s in a.stores.all():
+            area_di.setdefault(s.id, a.numero)
+
+    per_negozio = {}
+    for p in persone:
+        per_negozio.setdefault(p.store, []).append(stati[p.id])
+    per_area = {}
+    for p in persone:
+        per_area.setdefault(area_di.get(p.store_id), []).append(stati[p.id])
+
+    return {
+        'corsi': _corsi_json(corsi),
+        'italia': riepiloga(list(stati.values()), corsi_ids),
+        'aree': [
+            {'numero': a.numero, 'area_manager_retail': a.area_manager_retail, 'area_bp': a.area_bp,
+             'corsi': riepiloga(per_area[a.numero], corsi_ids)}
+            for a in aree if a.numero in per_area
+        ],
+        'negozi': [
+            {'id': n.id, 'nome': n.nome, 'codice_store': n.codice_store, 'area': area_di.get(n.id),
+             'persone': len(lista), 'corsi': riepiloga(lista, corsi_ids)}
+            for n, lista in sorted(per_negozio.items(), key=lambda x: x[0].nome)
+        ],
+    }
+
+
+def completamento_negozio(negozio):
+    """Dettaglio persona per persona di un negozio, con il riepilogo per corso."""
+    from .models import EHSCorso
+
+    persone = list(persone_monitorate(negozio))
+    stati = calcola_stati(persone)
+    corsi = list(EHSCorso.objects.filter(id__in={cid for s in stati.values() for cid in s}).order_by('nome'))
+    return {
+        'negozio': {'id': negozio.id, 'nome': negozio.nome},
+        'corsi': _corsi_json(corsi),
+        'riepilogo': riepiloga(list(stati.values()), [c.id for c in corsi]),
+        'persone': [
+            {'id': p.id, 'nome_completo': p.nome_completo, 'ruolo_nome': p.ruolo.nome if p.ruolo else None,
+             'mansioni': [m.nome for m in p.ehs_mansioni.all()], 'stati': stati[p.id]}
+            for p in persone
+        ],
+    }

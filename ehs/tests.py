@@ -326,3 +326,27 @@ class EHSFormazioneObbligatoriaTest(TestCase):
         self.assertEqual(c.put(url.format(self.tm_user.id), {'mansioni': [self.mansione.id]}, format='json').status_code, 200)
         self.assertEqual(c.put(url.format(self.altro_user.id), {'mansioni': [self.mansione.id]}, format='json').status_code, 403)
         self.assertEqual(list(self.tm_user.ehs_mansioni.all()), [self.mansione])
+
+    def test_stati_e_completamento(self):
+        from .models import EHSFormazione, EHSObbligo
+        EHSObbligo.objects.create(corso=self.corso, ruolo=self.tm)
+        oggi = timezone.now().date()
+        stati = services.calcola_stati([self.tm_user, self.altro_user])
+        self.assertEqual(stati[self.tm_user.id][self.corso.id]['stato'], 'mancante')
+        # 700 giorni fa con validità 730: scade tra 30 giorni -> in scadenza (soglia 45)
+        EHSFormazione.objects.create(utente=self.tm_user, corso=self.corso, data=oggi - timedelta(days=700), fonte='manuale')
+        EHSFormazione.objects.create(utente=self.altro_user, corso=self.corso, data=oggi - timedelta(days=800), fonte='manuale')
+        stati = services.calcola_stati([self.tm_user, self.altro_user])
+        self.assertEqual(stati[self.tm_user.id][self.corso.id]['stato'], 'in_scadenza')
+        self.assertEqual(stati[self.altro_user.id][self.corso.id]['stato'], 'scaduta')
+        r = services.riepiloga(stati.values(), [self.corso.id])[self.corso.id]
+        self.assertEqual((r['dovuti'], r['conformi'], r['percentuale']), (2, 1, 50))
+
+    def test_permessi_completamento(self):
+        self.assertEqual(self._client(self.store_user).get('/api/ehs/completamento/').status_code, 403)
+        self.assertEqual(self._client(self.area).get('/api/ehs/completamento/').status_code, 200)
+        url = '/api/ehs/completamento/negozio/{}/'
+        self.assertEqual(self._client(self.store_user).get(url.format(self.negozio.id)).status_code, 200)
+        self.assertEqual(self._client(self.store_user).get(url.format(self.altro.id)).status_code, 403)
+        persone = self._client(self.area).get(url.format(self.negozio.id)).json()['persone']
+        self.assertEqual([p['id'] for p in persone], [self.tm_user.id])
