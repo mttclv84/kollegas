@@ -4,7 +4,10 @@ from rest_framework import serializers
 
 from events.models import Evento
 
-from .models import EHSCorso, EHSOffertaCorso, EHSPartecipante, EHSSessione, EHSSessioneDocumento, EHSSessioneLog
+from .models import (
+    EHSCorso, EHSFormazione, EHSMansione, EHSObbligo, EHSOffertaCorso, EHSPartecipante, EHSSessione,
+    EHSSessioneDocumento, EHSSessioneLog,
+)
 from .services import cancellazione_consentita
 
 User = get_user_model()
@@ -40,8 +43,8 @@ class EHSOffertaCorsoSerializer(serializers.ModelSerializer):
 
 
 class EHSCorsoSerializer(serializers.ModelSerializer):
-    """Corso con i suoi abbinamenti fornitore (offerte): ogni corso deve avere almeno
-    un fornitore, ciascuno valido per tutti i negozi o per un elenco di negozi.
+    """Corso con i suoi abbinamenti fornitore (offerte), ciascuno valido per tutti i
+    negozi o per un elenco di negozi. Senza fornitori il corso non è richiedibile.
     In scrittura `offerte` sostituisce interamente gli abbinamenti esistenti."""
     offerte = EHSOffertaCorsoSerializer(many=True, required=False)
     fornitori_nomi = serializers.SerializerMethodField()
@@ -50,7 +53,7 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
         model = EHSCorso
         fields = [
             'id', 'codice', 'nome', 'durata_ore', 'descrizione', 'attivo', 'scadenza_giorni',
-            'offerte', 'fornitori_nomi',
+            'ore_aggiornamento', 'offerte', 'fornitori_nomi',
         ]
         # Il codice è generato automaticamente alla creazione (EHS + 4 cifre random) e
         # non è mai modificabile da input client, né in creazione né in modifica.
@@ -60,8 +63,8 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
         return [o.fornitore.fornitore_ragione_sociale or o.fornitore.nome_completo for o in obj.offerte.all()]
 
     def validate_offerte(self, value):
-        if not value:
-            raise serializers.ValidationError('Abbina almeno un fornitore al corso.')
+        # Un corso senza fornitori è ammesso (es. moduli e-learning da registrare a mano):
+        # semplicemente non compare tra i corsi richiedibili in 'Nuova Richiesta'.
         fornitori = [o['fornitore'] for o in value]
         if len({f.pk for f in fornitori}) != len(fornitori):
             raise serializers.ValidationError('Lo stesso fornitore è abbinato più volte.')
@@ -75,11 +78,6 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
                     f'oppure abilitalo per tutti i negozi.'
                 )
         return value
-
-    def validate(self, attrs):
-        if self.instance is None and 'offerte' not in attrs:
-            raise serializers.ValidationError({'offerte': 'Abbina almeno un fornitore al corso.'})
-        return attrs
 
     def _salva_offerte(self, corso, offerte):
         corso.offerte.all().delete()
@@ -242,3 +240,55 @@ class EHSCalendarioEventoSerializer(serializers.ModelSerializer):
         if not sessione:
             return None
         return sessione.negozio.codice_store or sessione.negozio.nome
+
+
+# --- Formazione obbligatoria ----------------------------------------------------
+
+class EHSMansioneSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EHSMansione
+        fields = ['id', 'nome', 'attivo']
+
+
+class EHSObbligoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EHSObbligo
+        fields = ['id', 'corso', 'ruolo', 'mansione', 'facoltativo']
+
+
+class EHSFormazioneSerializer(serializers.ModelSerializer):
+    corso_nome = serializers.CharField(source='corso.nome', read_only=True)
+    fonte_display = serializers.CharField(source='get_fonte_display', read_only=True)
+
+    class Meta:
+        model = EHSFormazione
+        fields = [
+            'id', 'utente', 'corso', 'corso_nome', 'data', 'ore', 'aggiornamento', 'scadenza',
+            'fonte', 'fonte_display', 'note',
+        ]
+        read_only_fields = ['scadenza', 'fonte']
+
+    def validate(self, attrs):
+        if EHSFormazione.objects.filter(
+            utente=attrs['utente'], corso=attrs['corso'], data=attrs['data'],
+        ).exists():
+            raise serializers.ValidationError({'detail': 'Formazione già registrata per questa persona e data.'})
+        return attrs
+
+
+class EHSPersonaSerializer(serializers.ModelSerializer):
+    """Persona soggetta alla matrice obblighi, con mansioni e registro formazioni."""
+    nome_completo = serializers.ReadOnlyField()
+    ruolo_nome = serializers.CharField(source='ruolo.nome', read_only=True, default=None)
+    mansioni = serializers.SerializerMethodField()
+    formazioni = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ['id', 'nome_completo', 'codice_matricola', 'ruolo', 'ruolo_nome', 'mansioni', 'formazioni']
+
+    def get_mansioni(self, obj):
+        return [m.id for m in obj.ehs_mansioni.all()]
+
+    def get_formazioni(self, obj):
+        return EHSFormazioneSerializer(obj.ehs_formazioni.all(), many=True).data

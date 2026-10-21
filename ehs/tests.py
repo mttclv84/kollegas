@@ -227,8 +227,12 @@ class EHSFlussiTest(TestCase):
         }, format='json')
         self.assertEqual(r.status_code, 201, r.content)
         self.assertEqual(r.json()['offerte'][0]['negozi'], [self.negozio.id])
-        r = c.post('/api/ehs/corsi/', {'nome': 'Senza', 'durata_ore': '1', 'offerte': []}, format='json')
-        self.assertEqual(r.status_code, 400)
+        # Senza fornitori il corso si crea, ma non è richiedibile.
+        r = c.post('/api/ehs/corsi/', {'nome': 'Senza', 'durata_ore': '0.25', 'offerte': []}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        richiedibili = [x['nome'] for x in c.get('/api/ehs/corsi/', {'richiedibili': 1}).json()]
+        self.assertIn('Primo soccorso', richiedibili)
+        self.assertNotIn('Senza', richiedibili)
         r = c.post('/api/ehs/corsi/', {
             'nome': 'Vuoto', 'durata_ore': '1',
             'offerte': [{'fornitore': self.f_rete.id, 'tutti_negozi': False, 'negozi': []}],
@@ -249,3 +253,76 @@ class EHSEmailBloccateTest(TestCase):
             sessione = services.crea_richiesta(store_user, corso, negozio, 'Ref', '')
             services.dichiara_non_disponibile(sessione, f)
         self.assertEqual(mail.outbox, [])
+
+
+class EHSFormazioneObbligatoriaTest(TestCase):
+    def setUp(self):
+        from users.models import Role
+        from .models import EHSMansione
+        self.negozio = Store.objects.create(nome='Caserta', comune='Caserta', provincia='CE', email_store='ce@store.it')
+        self.altro = Store.objects.create(nome='Roma', comune='Roma', provincia='RM', email_store='rm2@store.it')
+        self.tm = Role.objects.get_or_create(nome='Team Manager')[0]
+        self.ra = Role.objects.get_or_create(nome='Retail Assistant')[0]
+        self.store_user = User.objects.create_user(
+            email='st@x.it', password='x', cognome='Store', nome='Ce', livello_accesso='store', store=self.negozio)
+        self.area = User.objects.create_user(email='area@x.it', password='x', cognome='A', nome='A', livello_accesso='area')
+        self.admin_ehs = User.objects.create_user(
+            email='ae@x.it', password='x', cognome='E', nome='E', livello_accesso='admin_ehs')
+        self.tm_user = User.objects.create_user(
+            email='tm@x.it', password='x', cognome='Bianchi', nome='Anna', store=self.negozio, ruolo=self.tm)
+        self.ra_user = User.objects.create_user(
+            email='ra@x.it', password='x', cognome='Verdi', nome='Luca', store=self.negozio, ruolo=self.ra)
+        self.altro_user = User.objects.create_user(
+            email='ro@x.it', password='x', cognome='Neri', nome='Sara', store=self.altro, ruolo=self.tm)
+        self.corso = EHSCorso.objects.create(codice='PREP', nome='Preposti test', durata_ore=12, scadenza_giorni=730)
+        self.mansione = EHSMansione.objects.create(nome='Stockroom test')
+
+    def _client(self, user):
+        c = APIClient()
+        c.force_authenticate(user)
+        return c
+
+    def test_scadenza_calcolata_dal_corso(self):
+        from .models import EHSFormazione
+        f = EHSFormazione.objects.create(utente=self.tm_user, corso=self.corso,
+                                         data=timezone.now().date(), fonte='manuale')
+        self.assertEqual(f.scadenza, f.data + timedelta(days=730))
+
+    def test_chiusura_aula_registra_formazione(self):
+        fornitore = User.objects.create_user(
+            email='f@x.it', password='x', cognome='F', nome='F', livello_accesso='fornitore', fornitore_ragione_sociale='F')
+        EHSOffertaCorso.objects.create(corso=self.corso, fornitore=fornitore)
+        sessione = services.crea_richiesta(self.store_user, self.corso, self.negozio, 'Ref', '', fornitore=fornitore)
+        services.proponi_data(sessione, fornitore, _prossima_mezzora(5), 'Doc', '333')
+        services.rispondi_data(sessione, self.store_user, accetta=True)
+        sessione.refresh_from_db()
+        p = EHSPartecipante.objects.create(sessione=sessione, utente=self.tm_user)
+        services.chiudi_aula(sessione, {p.id: True}, [SimpleUploadedFile('r.pdf', b'x')], fornitore)
+        f = self.tm_user.ehs_formazioni.get()
+        self.assertEqual((f.corso, f.fonte, f.partecipante), (self.corso, 'aula', p))
+        self.assertIsNotNone(f.scadenza)
+
+    def test_matrice_modificabile_solo_da_admin_ehs(self):
+        body = {'corso': self.corso.id, 'ruolo': self.tm.id, 'stato': 'obbligatorio'}
+        self.assertEqual(self._client(self.area).put('/api/ehs/matrice/', body, format='json').status_code, 403)
+        self.assertEqual(self._client(self.admin_ehs).put('/api/ehs/matrice/', body, format='json').status_code, 200)
+        self.assertTrue(self.corso.obblighi.filter(ruolo=self.tm, facoltativo=False).exists())
+        body['stato'] = None
+        self._client(self.admin_ehs).put('/api/ehs/matrice/', body, format='json')
+        self.assertFalse(self.corso.obblighi.exists())
+        r = self._client(self.area).get('/api/ehs/matrice/')
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn('Retail Assistant', [x['nome'] for x in r.json()['ruoli']])
+
+    def test_persone_escludono_retail_assistant_e_store_vede_solo_il_suo(self):
+        ids = [p['id'] for p in self._client(self.store_user).get('/api/ehs/persone/', {'negozio': self.altro.id}).json()]
+        self.assertEqual(ids, [self.tm_user.id])
+        ids = [p['id'] for p in self._client(self.area).get('/api/ehs/persone/', {'negozio': self.altro.id}).json()]
+        self.assertEqual(ids, [self.altro_user.id])
+
+    def test_mansioni_store_solo_propri_collaboratori(self):
+        url = '/api/ehs/persone/{}/mansioni/'
+        c = self._client(self.store_user)
+        self.assertEqual(c.put(url.format(self.tm_user.id), {'mansioni': [self.mansione.id]}, format='json').status_code, 200)
+        self.assertEqual(c.put(url.format(self.altro_user.id), {'mansioni': [self.mansione.id]}, format='json').status_code, 403)
+        self.assertEqual(list(self.tm_user.ehs_mansioni.all()), [self.mansione])

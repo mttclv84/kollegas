@@ -635,6 +635,8 @@ def chiudi_aula(sessione, presenze, files, utente_fornitore, assenze_motivo=None
                 partecipante.completato = False
                 partecipante.assente_motivo = assenze_motivo.get(partecipante.id, '')
             partecipante.save()
+            if partecipante.presente:
+                registra_formazione_da_aula(partecipante, now.date())
 
             # Allinea l'iscrizione standard (Report/Completamento generali di Kollegas):
             # un assente EHS deve risultare "assente" anche fuori dalla sezione EHS.
@@ -750,3 +752,52 @@ def genera_notifiche_scadenza():
         if created:
             creati += 1
     return creati
+
+
+# --- Formazione obbligatoria ----------------------------------------------------
+
+# Ruoli esclusi dal monitoraggio della formazione obbligatoria (per ora).
+RUOLI_ESCLUSI_OBBLIGHI = ('Retail Assistant',)
+
+
+def registra_formazione_da_aula(partecipante, data):
+    """Riporta nel registro formazioni la presenza confermata a un'aula EHS. Se per
+    lo stesso giorno esiste già una registrazione (es. da import), la collega all'aula."""
+    from .models import EHSFormazione
+
+    sessione = partecipante.sessione
+    formazione = (EHSFormazione.objects.filter(partecipante=partecipante).first()
+                  or EHSFormazione.objects.filter(utente=partecipante.utente, corso=sessione.corso, data=data).first()
+                  or EHSFormazione(utente=partecipante.utente, corso=sessione.corso, data=data))
+    formazione.data = data
+    formazione.ore = sessione.durata_ore
+    formazione.partecipante = partecipante
+    formazione.fonte = 'aula'
+    formazione.save()
+    return formazione
+
+
+def persone_monitorate(negozio):
+    """Utenti attivi del negozio soggetti alla matrice obblighi: esclusi account
+    negozio/fornitore e i ruoli fuori perimetro."""
+    from django.contrib.auth import get_user_model
+
+    return (get_user_model().objects
+            .filter(store=negozio, is_active=True)
+            .exclude(livello_accesso__in=('store', 'fornitore'))
+            .exclude(ruolo__nome__in=RUOLI_ESCLUSI_OBBLIGHI)
+            .select_related('ruolo')
+            .prefetch_related('ehs_mansioni')
+            .order_by('cognome', 'nome'))
+
+
+def imposta_cella_matrice(corso, ruolo=None, mansione=None, stato=None):
+    """stato: 'obbligatorio', 'facoltativo' o None (nessun obbligo)."""
+    from .models import EHSObbligo
+
+    filtro = {'corso': corso, 'ruolo': ruolo, 'mansione': mansione}
+    if stato is None:
+        EHSObbligo.objects.filter(**filtro).delete()
+        return None
+    obbligo, _ = EHSObbligo.objects.update_or_create(**filtro, defaults={'facoltativo': stato == 'facoltativo'})
+    return obbligo

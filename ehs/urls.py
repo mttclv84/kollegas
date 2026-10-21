@@ -40,4 +40,10 @@ urlpatterns = [
     path('ehs/registri/<int:pk>/file/<int:documento_id>/', views.EHSRegistroFileView.as_view(), name='ehs-registro-documento'),
     path('ehs/scadenze/', views.EHSScadenzeView.as_view(), name='ehs-scadenze'),
     path('ehs/configurazione/', views.EHSConfigurazioneView.as_view(), name='ehs-configurazione'),
+    path('ehs/matrice/', views.EHSMatriceView.as_view(), name='ehs-matrice'),
+    path('ehs/mansioni/', views.EHSMansioneListCreateView.as_view(), name='ehs-mansione-list'),
+    path('ehs/persone/', views.EHSPersoneView.as_view(), name='ehs-persone'),
+    path('ehs/persone/<int:pk>/mansioni/', views.EHSPersonaMansioniView.as_view(), name='ehs-persona-mansioni'),
+    path('ehs/formazioni/', views.EHSFormazioneCreateView.as_view(), name='ehs-formazione-create'),
+    path('ehs/formazioni/<int:pk>/', views.EHSFormazioneDetailView.as_view(), name='ehs-formazione-detail'),
 ]

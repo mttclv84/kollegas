@@ -16,24 +16,32 @@ from stores.models import Store
 
 from django.contrib.auth import get_user_model
 
+from users.models import Role
 from users.permissions import IsAdminEHS, IsAdminOrHOEHS
 
 from . import services
 from .models import (
     EHSConfigurazione,
     EHSCorso,
+    EHSFormazione,
+    EHSMansione,
     EHSNotificaDataProposta,
     EHSNotificaNuovaRichiesta,
     EHSNotificaScadenza,
     EHSNotificaSessioneConfermata,
     EHSNotificaSessioneConfermataStore,
+    EHSObbligo,
     EHSPartecipante,
     EHSSessione,
 )
 from .serializers import (
     EHSCalendarioEventoSerializer,
     EHSCorsoSerializer,
+    EHSFormazioneSerializer,
     EHSFornitoreSerializer,
+    EHSMansioneSerializer,
+    EHSObbligoSerializer,
+    EHSPersonaSerializer,
     EHSSessioneDetailSerializer,
     EHSSessioneListSerializer,
 )
@@ -82,6 +90,9 @@ class EHSCorsoListCreateView(generics.ListCreateAPIView):
         qs = EHSCorso.objects.prefetch_related('offerte__fornitore', 'offerte__negozi').order_by('nome')
         if user.livello_accesso not in ('admin', 'admin_ehs', 'ho'):
             qs = qs.filter(attivo=True)
+        # ?richiedibili=1: solo i corsi con almeno un fornitore (tendina di 'Nuova Richiesta').
+        if self.request.query_params.get('richiedibili'):
+            qs = qs.filter(attivo=True, offerte__isnull=False).distinct()
         return qs
 
     def perform_create(self, serializer):
@@ -814,3 +825,111 @@ class EHSConfigurazioneView(APIView):
         config.sharepoint_attestati_url = url
         config.save()
         return Response({'sharepoint_attestati_url': config.sharepoint_attestati_url})
+
+
+# --- Formazione obbligatoria ----------------------------------------------------
+
+# Chi può consultare matrice e registro: Area e Store compresi (lo store solo per il
+# proprio negozio). Le modifiche alla matrice sono riservate ad Admin/EHS Admin.
+RUOLI_LETTURA_OBBLIGHI = ('admin', 'admin_ehs', 'ho', 'area', 'store')
+
+
+def _negozio_consentito(request, negozio_id):
+    """Negozio richiesto se l'utente può vederlo: lo store vede solo il proprio."""
+    user = request.user
+    if user.livello_accesso == 'store':
+        return user.store
+    if user.livello_accesso in RUOLI_LETTURA_OBBLIGHI and negozio_id:
+        return Store.objects.filter(pk=negozio_id).first()
+    return None
+
+
+class EHSMatriceView(APIView):
+    """GET /ehs/matrice/ — matrice obblighi completa (corsi, ruoli, mansioni, celle).
+    PUT /ehs/matrice/ {corso, ruolo|mansione, stato} — imposta una cella:
+    stato 'obbligatorio', 'facoltativo' o null per toglierla."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.livello_accesso not in RUOLI_LETTURA_OBBLIGHI:
+            return Response(status=403)
+        return Response({
+            'corsi': EHSCorsoSerializer(EHSCorso.objects.filter(attivo=True).order_by('nome'), many=True).data,
+            'ruoli': [{'id': r.id, 'nome': r.nome} for r in
+                      Role.objects.exclude(nome__in=services.RUOLI_ESCLUSI_OBBLIGHI).order_by('nome')],
+            'mansioni': EHSMansioneSerializer(EHSMansione.objects.filter(attivo=True), many=True).data,
+            'obblighi': EHSObbligoSerializer(EHSObbligo.objects.all(), many=True).data,
+        })
+
+    def put(self, request):
+        if request.user.livello_accesso not in ('admin', 'admin_ehs'):
+            return Response({'detail': 'Solo Admin/EHS Admin possono modificare la matrice.'}, status=403)
+        corso = get_object_or_404(EHSCorso, pk=request.data.get('corso'))
+        ruolo_id, mansione_id = request.data.get('ruolo'), request.data.get('mansione')
+        if bool(ruolo_id) == bool(mansione_id):
+            return Response({'detail': 'Indicare un ruolo oppure una mansione.'}, status=400)
+        stato = request.data.get('stato')
+        if stato not in ('obbligatorio', 'facoltativo', None):
+            return Response({'detail': 'Stato non valido.'}, status=400)
+        obbligo = services.imposta_cella_matrice(
+            corso,
+            ruolo=get_object_or_404(Role, pk=ruolo_id) if ruolo_id else None,
+            mansione=get_object_or_404(EHSMansione, pk=mansione_id) if mansione_id else None,
+            stato=stato,
+        )
+        return Response(EHSObbligoSerializer(obbligo).data if obbligo else None)
+
+
+class EHSMansioneListCreateView(generics.ListCreateAPIView):
+    serializer_class = EHSMansioneSerializer
+    pagination_class = None
+    queryset = EHSMansione.objects.all()
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [IsAuthenticated()]
+        return [IsAdminEHS()]
+
+
+class EHSPersoneView(APIView):
+    """GET /ehs/persone/?negozio=<id> — persone del negozio soggette alla matrice,
+    con mansioni e registro formazioni."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        negozio = _negozio_consentito(request, request.query_params.get('negozio'))
+        if negozio is None:
+            return Response([])
+        persone = services.persone_monitorate(negozio).prefetch_related('ehs_formazioni__corso')
+        return Response(EHSPersonaSerializer(persone, many=True).data)
+
+
+class EHSPersonaMansioniView(APIView):
+    """PUT /ehs/persone/<pk>/mansioni/ {mansioni: [id]} — Admin/EHS Admin per tutti,
+    lo store per i collaboratori del proprio negozio."""
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, pk):
+        user = request.user
+        persona = get_object_or_404(User, pk=pk)
+        consentito = (user.livello_accesso in ('admin', 'admin_ehs')
+                      or (user.livello_accesso == 'store' and user.store_id and persona.store_id == user.store_id))
+        if not consentito:
+            return Response({'detail': 'Non autorizzato.'}, status=403)
+        mansioni = EHSMansione.objects.filter(pk__in=request.data.get('mansioni') or [])
+        persona.ehs_mansioni.set(mansioni)
+        return Response({'id': persona.id, 'mansioni': [m.id for m in mansioni]})
+
+
+class EHSFormazioneCreateView(generics.CreateAPIView):
+    """Inserimento manuale nel registro (formazioni svolte fuori dalle aule EHS)."""
+    serializer_class = EHSFormazioneSerializer
+    permission_classes = [IsAdminEHS]
+
+    def perform_create(self, serializer):
+        serializer.save(fonte='manuale', creata_da=self.request.user)
+
+
+class EHSFormazioneDetailView(generics.DestroyAPIView):
+    queryset = EHSFormazione.objects.all()
+    permission_classes = [IsAdminEHS]

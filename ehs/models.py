@@ -4,12 +4,14 @@ from django.db import models
 class EHSCorso(models.Model):
     codice = models.CharField(max_length=30, unique=True)  # es. "SCALE"
     nome = models.CharField(max_length=200)
-    durata_ore = models.DecimalField(max_digits=4, decimal_places=1)
+    durata_ore = models.DecimalField(max_digits=5, decimal_places=2)
     descrizione = models.TextField(blank=True)
     attivo = models.BooleanField(default=True)
     # Se valorizzato, alla chiusura aula si calcola la scadenza per ogni
     # partecipante presente. Se null, il corso non prevede scadenza.
     scadenza_giorni = models.PositiveIntegerField(null=True, blank=True)
+    # Durata del corso di aggiornamento che rinnova la validità (es. Preposti: 6 ore).
+    ore_aggiornamento = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     class Meta:
         verbose_name = 'Corso EHS'
         verbose_name_plural = 'Corsi EHS'
@@ -307,3 +309,93 @@ class EHSNotificaNuovaRichiesta(models.Model):
 
     def __str__(self):
         return f'Nuova richiesta {self.sessione} — {self.fornitore}'
+
+
+# --- Formazione obbligatoria (matrice ruoli/mansioni e registro) ---------------
+
+class EHSMansione(models.Model):
+    """Mansione EHS di dettaglio assegnata alla persona in aggiunta al ruolo
+    (es. Stockroom, Cashoffice, Visual, EHS OPS in Store Lead): fa scattare
+    obblighi formativi che il solo ruolo non distingue."""
+    nome = models.CharField(max_length=100, unique=True)
+    attivo = models.BooleanField(default=True)
+    utenti = models.ManyToManyField('users.User', blank=True, related_name='ehs_mansioni')
+
+    class Meta:
+        verbose_name = 'Mansione EHS'
+        verbose_name_plural = 'Mansioni EHS'
+        ordering = ['nome']
+
+    def __str__(self):
+        return self.nome
+
+
+class EHSObbligo(models.Model):
+    """Cella della matrice obblighi: il corso è richiesto a chi ha il ruolo oppure
+    la mansione indicata (esattamente uno dei due). Con `facoltativo` il corso non è
+    obbligatorio ma può essere fatto in anticipo (es. Dirigenti per DM e VM)."""
+    corso = models.ForeignKey(EHSCorso, on_delete=models.CASCADE, related_name='obblighi')
+    ruolo = models.ForeignKey('users.Role', on_delete=models.CASCADE, null=True, blank=True, related_name='ehs_obblighi')
+    mansione = models.ForeignKey(EHSMansione, on_delete=models.CASCADE, null=True, blank=True, related_name='obblighi')
+    facoltativo = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Obbligo Formativo EHS'
+        verbose_name_plural = 'Obblighi Formativi EHS'
+        constraints = [
+            models.UniqueConstraint(fields=['corso', 'ruolo'], condition=models.Q(ruolo__isnull=False),
+                                    name='ehs_obbligo_corso_ruolo_unico'),
+            models.UniqueConstraint(fields=['corso', 'mansione'], condition=models.Q(mansione__isnull=False),
+                                    name='ehs_obbligo_corso_mansione_unico'),
+            models.CheckConstraint(
+                condition=(models.Q(ruolo__isnull=False, mansione__isnull=True)
+                           | models.Q(ruolo__isnull=True, mansione__isnull=False)),
+                name='ehs_obbligo_ruolo_o_mansione',
+            ),
+        ]
+
+    def __str__(self):
+        chi = self.ruolo or self.mansione
+        return f'{chi} → {self.corso}{" (facoltativo)" if self.facoltativo else ""}'
+
+
+class EHSFormazione(models.Model):
+    """Registro delle formazioni EHS svolte da una persona: è la fonte unica per
+    stato e scadenze. Si alimenta dalla chiusura aula (fonte 'aula'), dall'import
+    dei file storici dei negozi ('import') o da inserimento manuale ('manuale')."""
+    FONTE_CHOICES = [
+        ('aula', 'Aula EHS'),
+        ('import', 'Import storico'),
+        ('manuale', 'Inserimento manuale'),
+    ]
+    utente = models.ForeignKey('users.User', on_delete=models.CASCADE, related_name='ehs_formazioni')
+    corso = models.ForeignKey(EHSCorso, on_delete=models.PROTECT, related_name='formazioni')
+    data = models.DateField()
+    ore = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    aggiornamento = models.BooleanField(default=False)
+    # Calcolata al salvataggio da data + corso.scadenza_giorni; null = nessuna scadenza.
+    scadenza = models.DateField(null=True, blank=True)
+    fonte = models.CharField(max_length=10, choices=FONTE_CHOICES)
+    partecipante = models.OneToOneField(
+        EHSPartecipante, on_delete=models.SET_NULL, null=True, blank=True, related_name='formazione',
+    )
+    note = models.CharField(max_length=300, blank=True)
+    creata_da = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='ehs_formazioni_inserite',
+    )
+    creata_il = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Formazione EHS svolta'
+        verbose_name_plural = 'Formazioni EHS svolte'
+        unique_together = ('utente', 'corso', 'data')
+        ordering = ['-data']
+
+    def __str__(self):
+        return f'{self.utente} — {self.corso} ({self.data})'
+
+    def save(self, *args, **kwargs):
+        from datetime import timedelta
+        giorni = self.corso.scadenza_giorni
+        self.scadenza = self.data + timedelta(days=giorni) if giorni else None
+        super().save(*args, **kwargs)
