@@ -290,7 +290,8 @@ class EHSProponiDataView(BaseEHSSessioneActionView):
             sessione = services.proponi_data(sessione, request.user, data_proposta, docente_nome, docente_telefono,
                                              link_online=link_online,
                                              partecipanti_min=request.data.get('partecipanti_min'),
-                                             partecipanti_max=request.data.get('partecipanti_max'))
+                                             partecipanti_max=request.data.get('partecipanti_max'),
+                                             modalita=request.data.get('modalita'))
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=403)
         return self.risposta(request, sessione)

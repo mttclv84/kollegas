@@ -485,3 +485,21 @@ class EHSRegoleAuleTest(TestCase):
         self.assertEqual((trovate[0]['minimo'], trovate[0]['massimo'], trovate[0]['mio_negozio']), (3, 10, False))
         self.assertEqual(self._client(altro_store).get('/api/ehs/cerca-formazioni/', {'citta': 'roma'}).json(), [])
         self.assertEqual(self._client(self.collaboratore).get('/api/ehs/matrice/').status_code, 200)
+
+    def test_fornitore_conferma_la_data_dello_store_e_sceglie_la_modalita(self):
+        data_store = _prossima_mezzora(12)
+        sessione = self._crea(data_suggerita_store=data_store)
+        with self.assertRaises(TransizioneNonValida):  # online senza link
+            services.proponi_data(sessione, self.f_rete, data_store, 'Doc', '333', partecipanti_min=3,
+                                  partecipanti_max=8, modalita='ONLINE')
+        services.proponi_data(sessione, self.f_rete, data_store, 'Doc', '333', partecipanti_min=3,
+                              partecipanti_max=8, modalita='ONLINE', link_online='https://call.example/x')
+        sessione.refresh_from_db()
+        self.assertEqual((sessione.stato, sessione.modalita, sessione.data_confermata),
+                         ('CONFERMATA', 'ONLINE', data_store))
+        self.assertEqual(sessione.calendario_evento.ehs_luogo, 'Online')
+        # data diversa da quella dello store: resta una proposta da accettare
+        altra = self._crea(data_suggerita_store=data_store)
+        services.proponi_data(altra, self.f_rete, _prossima_mezzora(13), 'Doc', '333', partecipanti_min=3,
+                              partecipanti_max=8, modalita='PRESENZA')
+        self.assertEqual(altra.stato, 'DATA_PROPOSTA')

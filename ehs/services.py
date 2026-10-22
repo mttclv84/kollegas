@@ -212,12 +212,12 @@ def _notifica_nuova_richiesta(sessione, fornitore):
     from .models import EHSNotificaNuovaRichiesta
     EHSNotificaNuovaRichiesta.objects.create(sessione=sessione, fornitore=fornitore)
     if fornitore.email:
-        modalita = 'online' if sessione.modalita == 'ONLINE' else 'in presenza'
         corpo = (f'Hai ricevuto una nuova richiesta di formazione EHS.\n\n'
-                 f'Corso: {sessione.corso.nome}\nNegozio: {sessione.negozio}\nModalità: {modalita}\n'
+                 f'Corso: {sessione.corso.nome}\nNegozio: {sessione.negozio}\n'
                  f'Partecipanti previsti: {sessione.partecipanti_previsti or "—"}\n'
                  f'Data suggerita dallo store: {_fmt(sessione.data_suggerita_store)}\n\n'
-                 f'Accedi all\'app per proporre una data o segnalare la tua non disponibilità.')
+                 f'Accedi all\'app per confermare la data (indicando modalità e partecipanti), '
+                 f'proporne un\'altra o segnalare la tua non disponibilità.')
         _invia_email([fornitore.email], f'Nuova richiesta: {_descrizione(sessione)}', corpo)
 
 
@@ -380,11 +380,20 @@ def _valida_min_max(partecipanti_min, partecipanti_max):
     return minimo, massimo
 
 
+def data_proposta_dallo_store(sessione):
+    """Data e ora che lo store ha chiesto al fornitore: la contro-proposta, oppure la
+    data suggerita nella richiesta."""
+    if sessione.stato == 'DATA_CONTROPROPOSTA':
+        return sessione.data_proposta
+    return sessione.data_suggerita_store
+
+
 def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telefono, link_online=None,
-                 partecipanti_min=None, partecipanti_max=None):
-    """Il fornitore propone data, docente e minimo/massimo di partecipanti insieme, sia
-    alla prima proposta sia dopo aver rifiutato una contro-proposta (§3: il ciclo può
-    ripetersi finché non si arriva a CONFERMATA tramite l'accettazione di una delle due parti)."""
+                 partecipanti_min=None, partecipanti_max=None, modalita=None):
+    """Il fornitore indica data, docente, modalità (in presenza/online, con il link per
+    l'online) e minimo/massimo di partecipanti. Se la data è quella chiesta dallo store
+    la formazione è confermata subito; altrimenti diventa una proposta che lo store
+    accetta o a cui contro-propone (§3: il ciclo si ripete fino alla conferma)."""
     if fornitore.livello_accesso not in RUOLI_FORNITORE:
         raise TransizioneNonValida('Solo il Fornitore (o Admin/HO) può proporre una data.')
     if sessione.stato not in ('RICHIESTA_INVIATA', 'DATA_CONTROPROPOSTA'):
@@ -393,12 +402,28 @@ def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telef
         raise TransizioneNonValida('Nome e telefono del docente sono obbligatori.')
     sessione.partecipanti_min, sessione.partecipanti_max = _valida_min_max(partecipanti_min, partecipanti_max)
     _valida_mezzora(data_proposta, 'Data proposta')
+    if modalita is not None:
+        if modalita not in ('PRESENZA', 'ONLINE'):
+            raise TransizioneNonValida('Indica se la formazione sarà in presenza o online.')
+        sessione.modalita = modalita
     if link_online is not None:
         sessione.link_online = link_online
     if sessione.modalita == 'ONLINE' and not sessione.link_online:
         raise TransizioneNonValida('Per una formazione online il link alla call è obbligatorio.')
+    conferma_diretta = data_proposta == data_proposta_dallo_store(sessione)
 
     with transaction.atomic():
+        if conferma_diretta:
+            sessione.data_proposta = data_proposta
+            sessione.docente_nome = docente_nome
+            sessione.docente_telefono = docente_telefono
+            if fornitore.livello_accesso == 'fornitore':
+                sessione.fornitore = fornitore
+            _conferma_sessione(sessione, fornitore,
+                               f'Fornitore ha confermato la data chiesta dallo store — docente: {docente_nome} — '
+                               f'partecipanti min {sessione.partecipanti_min}, max {sessione.partecipanti_max}',
+                               notifica_lato='store')
+            return sessione
         stato_precedente = sessione.stato
         sessione.data_proposta = data_proposta
         # Non sovrascrivere un fornitore già assegnato quando l'azione è compiuta da
