@@ -460,7 +460,7 @@ class EHSCalendarioView(APIView):
             'location_display': ev.location_store.nome if ev.location_store else '',
             'max_partecipanti': 0, 'iscritti_count': 0, 'posti_disponibili': None,
             'is_ehs': False, 'ehs_luogo': '', 'ehs_sessione_id': None, 'ehs_sessione_stato': None,
-            'ehs_corso_nome': None, 'ehs_negozio_codice': None, 'occupato': True,
+            'ehs_corso_nome': None, 'ehs_negozio_codice': None, 'ehs_negozio_id': None, 'occupato': True,
         }
 
 

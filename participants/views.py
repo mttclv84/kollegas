@@ -63,6 +63,10 @@ class IscrizioneListCreateView(generics.ListCreateAPIView):
         if user.livello_accesso == 'store' and target_user.store_id != user.store_id:
             self.permission_denied(self.request, message='Puoi iscrivere solo collaboratori del tuo store.')
         evento = serializer.validated_data['evento']
+        # Ogni evento del calendario è aperto a tutti gli store fino a esaurimento posti
+        # (max_partecipanti = 0 significa senza limite).
+        if evento.max_partecipanti and evento.iscrizioni.count() >= evento.max_partecipanti:
+            raise ValidationError({'detail': f'Posti esauriti: massimo {evento.max_partecipanti} partecipanti.'})
         if evento.is_ehs:
             from ehs.services import TransizioneNonValida, verifica_iscrizione
             try:

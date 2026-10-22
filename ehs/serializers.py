@@ -227,6 +227,7 @@ class EHSCalendarioEventoSerializer(serializers.ModelSerializer):
     ehs_sessione_stato = serializers.SerializerMethodField()
     ehs_corso_nome = serializers.SerializerMethodField()
     ehs_negozio_codice = serializers.SerializerMethodField()
+    ehs_negozio_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Evento
@@ -234,7 +235,7 @@ class EHSCalendarioEventoSerializer(serializers.ModelSerializer):
             'id', 'data', 'ora_inizio', 'ora_fine', 'attivita_nome', 'attivita_tipologia',
             'location_display', 'max_partecipanti', 'iscritti_count', 'posti_disponibili',
             'is_ehs', 'ehs_luogo', 'ehs_sessione_id', 'ehs_sessione_stato',
-            'ehs_corso_nome', 'ehs_negozio_codice',
+            'ehs_corso_nome', 'ehs_negozio_codice', 'ehs_negozio_id',
         ]
 
     def get_iscritti_count(self, obj):
@@ -257,6 +258,10 @@ class EHSCalendarioEventoSerializer(serializers.ModelSerializer):
         if not sessione:
             return None
         return sessione.negozio.codice_store or sessione.negozio.nome
+
+    def get_ehs_negozio_id(self, obj):
+        sessione = getattr(obj, 'ehs_sessione', None)
+        return sessione.negozio_id if sessione else None
 
 
 # --- Formazione obbligatoria ----------------------------------------------------
