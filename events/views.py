@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from rest_framework import serializers as drf_serializers
 from .models import Host, AttivitaCatalogo, Evento, EccezioneCalendario, NotificaEvento
 from .serializers import HostSerializer, AttivitaCatalogoSerializer, EventoListSerializer, EventoDetailSerializer
-from users.permissions import IsAdminOrHO, IsAdminOrHOOrArea, IsAdminOrHOOrAreaEHS
+from users.permissions import IsAdminOrHO, IsAdminOrHOEHS, IsAdminOrHOOrArea, IsAdminOrHOOrAreaEHS
 
 
 class HostListCreateView(generics.ListCreateAPIView):
@@ -82,7 +82,8 @@ class EventoListCreateView(generics.ListCreateAPIView):
 
     def get_permissions(self):
         if self.request.method == 'POST':
-            return [IsAdminOrHOOrAreaEHS()]
+            # L'utente Area visualizza soltanto: non crea formazioni.
+            return [IsAdminOrHOEHS()]
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
@@ -138,7 +139,7 @@ class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [IsAuthenticated()]
-        return [IsAdminOrHOOrAreaEHS()]
+        return [IsAdminOrHOEHS()]
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
