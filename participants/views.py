@@ -21,6 +21,16 @@ def giorni_blocco(evento):
     return GIORNI_BLOCCO_EHS if evento.is_ehs else GIORNI_BLOCCO
 
 
+# Trascorsi 7 giorni dalla data, l'aula è chiusa: i partecipanti restano consultabili,
+# ma solo l'Admin può ancora iscrivere, modificare o cancellare.
+GIORNI_CHIUSURA_AULA = 7
+MSG_AULA_CHIUSA = 'Aula chiusa: sono passati più di 7 giorni, i partecipanti sono solo consultabili.'
+
+
+def aula_chiusa(evento, utente):
+    return utente.livello_accesso != 'admin' and evento.data < date.today() - timedelta(days=GIORNI_CHIUSURA_AULA)
+
+
 class IscrizioneListCreateView(generics.ListCreateAPIView):
     serializer_class = IscrizioneSerializer
     permission_classes = [IsAuthenticated]
@@ -63,6 +73,8 @@ class IscrizioneListCreateView(generics.ListCreateAPIView):
         if user.livello_accesso == 'store' and target_user.store_id != user.store_id:
             self.permission_denied(self.request, message='Puoi iscrivere solo collaboratori del tuo store.')
         evento = serializer.validated_data['evento']
+        if aula_chiusa(evento, user):
+            self.permission_denied(self.request, message=MSG_AULA_CHIUSA)
         # Ogni evento del calendario è aperto a tutti gli store fino a esaurimento posti
         # (max_partecipanti = 0 significa senza limite).
         if evento.max_partecipanti and evento.iscrizioni.count() >= evento.max_partecipanti:
@@ -87,8 +99,15 @@ class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
             qs = qs.filter(user__store=user.store)
         return qs
 
+    def update(self, request, *args, **kwargs):
+        if aula_chiusa(self.get_object().evento, request.user):
+            return Response({'detail': MSG_AULA_CHIUSA}, status=status.HTTP_403_FORBIDDEN)
+        return super().update(request, *args, **kwargs)
+
     def destroy(self, request, *args, **kwargs):
         user = request.user
+        if aula_chiusa(self.get_object().evento, user):
+            return Response({'detail': MSG_AULA_CHIUSA}, status=status.HTTP_403_FORBIDDEN)
         if user.livello_accesso == 'store':
             iscrizione = self.get_object()
             delta = (iscrizione.evento.data - date.today()).days

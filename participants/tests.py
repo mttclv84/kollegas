@@ -46,6 +46,26 @@ class IscrizionePostiTest(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn('Posti esauriti', str(r.data))
 
+    def test_aula_chiusa_dopo_7_giorni_solo_admin(self):
+        self.evento.data = date.today() - timedelta(days=8)
+        self.evento.max_partecipanti = 0
+        self.evento.save()
+        self.assertEqual(self._iscrivi(self.store_b, self.persona_b).status_code, 403)
+        admin = User.objects.create_user(email='ad@x.it', password='x', cognome='Ad', nome='Min', livello_accesso='admin')
+        self.assertEqual(self._iscrivi(admin, self.persona_b).status_code, 201)
+        iscrizione = self.evento.iscrizioni.get()
+        ho = User.objects.create_user(email='ho@x.it', password='x', cognome='Ho', nome='Ho', livello_accesso='ho')
+        c = APIClient()
+        c.force_authenticate(ho)
+        self.assertEqual(c.patch(f'/api/iscrizioni/{iscrizione.id}/', {'stato': 'partecipato'}).status_code, 403)
+        c.force_authenticate(admin)
+        self.assertEqual(c.patch(f'/api/iscrizioni/{iscrizione.id}/', {'stato': 'partecipato'}).status_code, 200)
+
+    def test_entro_7_giorni_aula_ancora_aperta(self):
+        self.evento.data = date.today() - timedelta(days=6)
+        self.evento.save()
+        self.assertEqual(self._iscrivi(self.store_b, self.persona_b).status_code, 201)
+
     def test_senza_limite_posti(self):
         self.evento.max_partecipanti = 0
         self.evento.save()
