@@ -61,6 +61,17 @@ class IscrizionePostiTest(TestCase):
         c.force_authenticate(admin)
         self.assertEqual(c.patch(f'/api/iscrizioni/{iscrizione.id}/', {'stato': 'partecipato'}).status_code, 200)
 
+    def test_solo_admin_elimina_iscritto(self):
+        self.assertEqual(self._iscrivi(self.store_b, self.persona_b).status_code, 201)
+        iscrizione = self.evento.iscrizioni.get()
+        c = APIClient()
+        c.force_authenticate(User.objects.create_user(
+            email='ho2@x.it', password='x', cognome='Ho', nome='Ho', livello_accesso='ho'))
+        self.assertEqual(c.delete(f'/api/iscrizioni/{iscrizione.id}/').status_code, 403)
+        c.force_authenticate(User.objects.create_user(
+            email='ad2@x.it', password='x', cognome='Ad', nome='Min', livello_accesso='admin'))
+        self.assertEqual(c.delete(f'/api/iscrizioni/{iscrizione.id}/').status_code, 204)
+
     def test_entro_7_giorni_aula_ancora_aperta(self):
         self.evento.data = date.today() - timedelta(days=6)
         self.evento.save()

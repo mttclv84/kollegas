@@ -108,6 +108,9 @@ class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
         user = request.user
         if aula_chiusa(self.get_object().evento, user):
             return Response({'detail': MSG_AULA_CHIUSA}, status=status.HTTP_403_FORBIDDEN)
+        # Tra i ruoli di sede solo l'Admin elimina gli iscritti: HO/Area/Admin EHS segnano le presenze.
+        if user.livello_accesso in ('ho', 'area', 'admin_ehs'):
+            return Response({'detail': 'Solo l\'Admin può eliminare un iscritto.'}, status=status.HTTP_403_FORBIDDEN)
         if user.livello_accesso == 'store':
             iscrizione = self.get_object()
             delta = (iscrizione.evento.data - date.today()).days
