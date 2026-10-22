@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from rest_framework import generics, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
@@ -7,12 +8,13 @@ from django.db.models import Prefetch
 from django.utils import timezone
 from .models import Iscrizione, RichiestaCancellazione
 from .serializers import IscrizioneSerializer, RichiestaCancellazioneSerializer
-from users.permissions import IsAdminOrHO, IsAdminOrHOOrArea, CanManageUsers, IsAdminOrHOOrAreaEHS
+from users.permissions import IsAdminOrHOEHS, IsAdminOrHOOrArea, CanManageUsers, IsAdminOrHOOrAreaEHS
 
 GIORNI_BLOCCO = 20
 # Per le formazioni EHS lo store può cancellare un iscritto fino a 7 giorni prima
 # (vedi ehs.services.GIORNI_LIMITE_CANCELLAZIONE); dopo serve una richiesta di cancellazione.
 GIORNI_BLOCCO_EHS = 7
+TIPOLOGIA_EHS = 'ehs'
 
 
 def giorni_blocco(evento):
@@ -60,6 +62,13 @@ class IscrizioneListCreateView(generics.ListCreateAPIView):
         target_user = User.objects.get(pk=target_user_id)
         if user.livello_accesso == 'store' and target_user.store_id != user.store_id:
             self.permission_denied(self.request, message='Puoi iscrivere solo collaboratori del tuo store.')
+        evento = serializer.validated_data['evento']
+        if evento.is_ehs:
+            from ehs.services import TransizioneNonValida, verifica_iscrizione
+            try:
+                verifica_iscrizione(evento, target_user)
+            except TransizioneNonValida as e:
+                raise ValidationError({'detail': str(e)})
         serializer.save()
 
 
@@ -152,11 +161,21 @@ class RichiestaCancellazioneListCreateView(APIView):
             'iscrizione', 'iscrizione__user', 'iscrizione__user__store',
             'iscrizione__evento', 'iscrizione__evento__attivita',
         )
+        # Le richieste sulle formazioni EHS le valida l'EHS Admin (l'Admin le vede tutte):
+        # ?ambito=ehs le mostra da sole, ?ambito=altro le esclude.
+        ambito = request.query_params.get('ambito')
+        if ambito == 'ehs':
+            qs = qs.filter(snap_tipologia=TIPOLOGIA_EHS)
+        elif ambito == 'altro':
+            qs = qs.exclude(snap_tipologia=TIPOLOGIA_EHS)
         if user.livello_accesso == 'store':
             qs = qs.filter(richiedente__store=user.store)
         elif user.livello_accesso == 'admin':
             pass  # vede tutto
+        elif user.livello_accesso == 'admin_ehs':
+            qs = qs.filter(snap_tipologia=TIPOLOGIA_EHS)
         elif user.livello_accesso == 'ho':
+            qs = qs.exclude(snap_tipologia=TIPOLOGIA_EHS)
             ruolo_nome = user.ruolo.nome if user.ruolo else ''
             if ruolo_nome == 'L&D':
                 qs = qs.filter(snap_tipologia='ld')
@@ -209,7 +228,7 @@ class RichiestaCancellazioneListCreateView(APIView):
 
 
 class RichiestaCancellazioneDetailView(APIView):
-    permission_classes = [IsAdminOrHO]
+    permission_classes = [IsAdminOrHOEHS]
 
     def patch(self, request, pk):
         try:
@@ -219,6 +238,11 @@ class RichiestaCancellazioneDetailView(APIView):
             ).get(pk=pk)
         except RichiestaCancellazione.DoesNotExist:
             return Response(status=404)
+
+        ehs = richiesta.snap_tipologia == TIPOLOGIA_EHS
+        livello = request.user.livello_accesso
+        if (ehs and livello == 'ho') or (not ehs and livello == 'admin_ehs'):
+            return Response({'detail': 'Le richieste EHS le valida l\'EHS Admin, le altre Admin/HO.'}, status=403)
 
         nuovo_stato = request.data.get('stato')
         if nuovo_stato not in ('approvata', 'rifiutata'):

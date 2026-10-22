@@ -54,7 +54,8 @@ class EHSFlussiTest(TestCase):
         return services.crea_richiesta(self.store_user, self.corso, self.negozio, 'Ref', '', **kw)
 
     def _conferma(self, sessione, giorni=10, link=None):
-        services.proponi_data(sessione, self.f_rete, _prossima_mezzora(giorni), 'Docente', '333', link_online=link)
+        services.proponi_data(sessione, self.f_rete, _prossima_mezzora(giorni), 'Docente', '333', link_online=link,
+                              partecipanti_min=3, partecipanti_max=10)
         services.rispondi_data(sessione, self.store_user, accetta=True)
         sessione.refresh_from_db()
         return sessione
@@ -115,7 +116,7 @@ class EHSFlussiTest(TestCase):
     def test_online_richiede_link_e_lo_invia_allo_store(self):
         sessione = self._crea(modalita='ONLINE')
         with self.assertRaises(TransizioneNonValida):
-            services.proponi_data(sessione, self.f_rete, _prossima_mezzora(10), 'Doc', '333')
+            services.proponi_data(sessione, self.f_rete, _prossima_mezzora(10), 'Doc', '333', partecipanti_min=3, partecipanti_max=10)
         with self.captureOnCommitCallbacks(execute=True):
             sessione = self._conferma(sessione, link='https://teams.microsoft.com/l/abc')
         self.assertEqual(sessione.calendario_evento.ehs_luogo, 'Online')
@@ -307,7 +308,8 @@ class EHSFormazioneObbligatoriaTest(TestCase):
             email='f@x.it', password='x', cognome='F', nome='F', livello_accesso='fornitore', fornitore_ragione_sociale='F')
         EHSOffertaCorso.objects.create(corso=self.corso, fornitore=fornitore)
         sessione = services.crea_richiesta(self.store_user, self.corso, self.negozio, 'Ref', '', fornitore=fornitore)
-        services.proponi_data(sessione, fornitore, _prossima_mezzora(5), 'Doc', '333')
+        services.proponi_data(sessione, fornitore, _prossima_mezzora(5), 'Doc', '333',
+                              partecipanti_min=3, partecipanti_max=10)
         services.rispondi_data(sessione, self.store_user, accetta=True)
         sessione.refresh_from_db()
         p = EHSPartecipante.objects.create(sessione=sessione, utente=self.tm_user)
@@ -364,3 +366,122 @@ class EHSFormazioneObbligatoriaTest(TestCase):
         self.assertEqual(self._client(self.store_user).get(url.format(self.altro.id)).status_code, 403)
         persone = self._client(self.area).get(url.format(self.negozio.id)).json()['persone']
         self.assertEqual([p['id'] for p in persone], [self.tm_user.id])
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend', EHS_EMAIL_ATTIVE=True)
+class EHSRegoleAuleTest(TestCase):
+    """Fornitori secondari, minimo/massimo partecipanti, rinnovo anticipato, richieste EHS."""
+    setUp = EHSFlussiTest.setUp
+    _client = EHSFlussiTest._client
+    _crea = EHSFlussiTest._crea
+
+    def _conferma(self, sessione, giorni=10, minimo=3, massimo=10):
+        services.proponi_data(sessione, self.f_rete, _prossima_mezzora(giorni), 'Doc', '333',
+                              partecipanti_min=minimo, partecipanti_max=massimo)
+        services.rispondi_data(sessione, self.store_user, accetta=True)
+        sessione.refresh_from_db()
+        return sessione
+
+    def _iscrivi(self, sessione, n):
+        for i in range(n):
+            u = User.objects.create_user(email=f'p{sessione.id}_{i}@x.it', password='x', cognome=f'P{i}', nome='X',
+                                         store=self.negozio)
+            Iscrizione.objects.create(evento=sessione.calendario_evento, user=u, stato='iscritto')
+
+    def test_fornitore_secondario_va_validato(self):
+        f_sec = User.objects.create_user(email='sec@forn.it', password='x', cognome='S', nome='S',
+                                         livello_accesso='fornitore', fornitore_ragione_sociale='Sec Srl')
+        EHSOffertaCorso.objects.create(corso=self.corso, fornitore=f_sec, secondario=True)
+        sessione = self._crea(fornitore=f_sec)
+        self.assertEqual((sessione.stato, sessione.fornitore, sessione.fornitore_secondario),
+                         ('IN_APPROVAZIONE', None, True))
+        services.decidi_eccezione(sessione, self.admin_ehs, approva=False, nota='usa il principale')
+        self.assertEqual((sessione.stato, sessione.fornitore), ('RICHIESTA_INVIATA', None))
+        services.assegna_fornitore(sessione, self.store_user, f_sec)
+        self.assertEqual(sessione.stato, 'IN_APPROVAZIONE')
+        services.decidi_eccezione(sessione, self.admin_ehs, approva=True)
+        self.assertEqual((sessione.stato, sessione.fornitore), ('RICHIESTA_INVIATA', f_sec))
+        # il principale non va validato ed è l'unico assegnato in automatico
+        self.assertEqual(self._crea().fornitore, self.f_rete)
+
+    def test_minimo_e_massimo_dal_fornitore(self):
+        sessione = self._crea()
+        with self.assertRaises(TransizioneNonValida):
+            services.proponi_data(sessione, self.f_rete, _prossima_mezzora(10), 'Doc', '333',
+                                  partecipanti_min=2, partecipanti_max=10)
+        with self.assertRaises(TransizioneNonValida):
+            services.proponi_data(sessione, self.f_rete, _prossima_mezzora(10), 'Doc', '333',
+                                  partecipanti_min=5, partecipanti_max=4)
+        sessione = self._conferma(sessione, massimo=3)
+        self.assertEqual(sessione.calendario_evento.max_partecipanti, 3)
+        self._iscrivi(sessione, 3)
+        r = self._client(self.store_user).post('/api/iscrizioni/', {
+            'evento': sessione.calendario_evento_id, 'user': self.collaboratore.id, 'stato': 'iscritto'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('Posti esauriti', r.json()['detail'])
+
+    def test_avviso_e_annullamento_sotto_minimo(self):
+        from .models import EHSAvviso
+        lontana = self._conferma(self._crea(), giorni=10)
+        vicina = self._conferma(self._crea(), giorni=4)
+        piena = self._conferma(self._crea(), giorni=4)
+        self._iscrivi(vicina, 2)
+        self._iscrivi(piena, 3)
+        self.assertEqual(services.controlla_minimo_partecipanti(), (1, 0))
+        avvisi = EHSAvviso.objects.filter(sessione=vicina, tipo='minimo_partecipanti')
+        self.assertEqual({(a.negozio_id, a.utente_id) for a in avvisi},
+                         {(self.negozio.id, None), (None, self.admin_ehs.id), (None, self.f_rete.id)})
+        self.assertEqual(self._client(self.store_user).get('/api/ehs/avvisi/').json()[0]['tipo'],
+                         'minimo_partecipanti')
+        # stesso giorno nessun annullamento, il giorno dopo sì
+        self.assertEqual(services.controlla_minimo_partecipanti(), (0, 0))
+        self.assertEqual(services.controlla_minimo_partecipanti(timezone.now() + timedelta(days=1)), (0, 1))
+        for s in (lontana, vicina, piena):
+            s.refresh_from_db()
+        self.assertEqual((lontana.stato, vicina.stato, piena.stato), ('CONFERMATA', 'ANNULLATA', 'CONFERMATA'))
+        self.assertIsNone(vicina.calendario_evento)
+        self.assertEqual(EHSAvviso.objects.filter(sessione=vicina, tipo='annullata_minimo').count(), 3)
+
+    def test_rinnovo_solo_negli_ultimi_120_giorni(self):
+        from .models import EHSFormazione
+        sessione = self._conferma(self._crea(), giorni=10)
+        f = EHSFormazione.objects.create(utente=self.collaboratore, corso=self.corso, fonte='manuale',
+                                         data=timezone.now().date())  # valida per altri 365 giorni
+        dati = {'evento': sessione.calendario_evento_id, 'user': self.collaboratore.id, 'stato': 'iscritto'}
+        r = self._client(self.store_user).post('/api/iscrizioni/', dati)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('120 giorni', r.json()['detail'])
+        v = self._client(self.store_user).get('/api/ehs/verifica-partecipante/', {
+            'utente': self.collaboratore.id, 'corso': self.corso.id, 'evento': sessione.calendario_evento_id}).json()
+        self.assertTrue(v['bloccato'])
+        f.data = timezone.now().date() - timedelta(days=300)  # scade tra 65 giorni
+        f.save()
+        self.assertEqual(self._client(self.store_user).post('/api/iscrizioni/', dati).status_code, 201)
+
+    def test_richieste_cancellazione_ehs_all_admin_ehs(self):
+        from participants.models import RichiestaCancellazione
+        ho = User.objects.create_user(email='ho@x.it', password='x', cognome='H', nome='O', livello_accesso='ho')
+        ehs = RichiestaCancellazione.objects.create(richiedente=self.store_user, motivazione='x', snap_tipologia='ehs')
+        altra = RichiestaCancellazione.objects.create(richiedente=self.store_user, motivazione='x', snap_tipologia='ld')
+
+        def visibili(u):
+            return {x['id'] for x in self._client(u).get('/api/richieste-cancellazione/').json()}
+
+        def decidi(u, r):
+            return self._client(u).patch(f'/api/richieste-cancellazione/{r.id}/', {'stato': 'rifiutata'}).status_code
+
+        self.assertEqual(visibili(self.admin_ehs), {ehs.id})
+        self.assertEqual(visibili(ho), {altra.id})
+        self.assertEqual(decidi(ho, ehs), 403)
+        self.assertEqual(decidi(self.admin_ehs, altra), 403)
+        self.assertEqual(decidi(self.admin_ehs, ehs), 200)
+
+    def test_cerca_formazioni_e_matrice_per_tutti(self):
+        sessione = self._conferma(self._crea(), giorni=10)
+        altro_store = User.objects.create_user(email='rm@x.it', password='x', cognome='S', nome='R',
+                                               livello_accesso='store', store=self.altro_negozio)
+        trovate = self._client(altro_store).get('/api/ehs/cerca-formazioni/', {'citta': 'fire'}).json()
+        self.assertEqual([t['id'] for t in trovate], [sessione.id])
+        self.assertEqual((trovate[0]['minimo'], trovate[0]['massimo'], trovate[0]['mio_negozio']), (3, 10, False))
+        self.assertEqual(self._client(altro_store).get('/api/ehs/cerca-formazioni/', {'citta': 'roma'}).json(), [])
+        self.assertEqual(self._client(self.collaboratore).get('/api/ehs/matrice/').status_code, 200)

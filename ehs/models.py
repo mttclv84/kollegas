@@ -34,6 +34,9 @@ class EHSOffertaCorso(models.Model):
     )
     tutti_negozi = models.BooleanField(default=True)
     negozi = models.ManyToManyField('stores.Store', blank=True, related_name='ehs_offerte')
+    # Il primo fornitore registrato sul corso è il principale; quelli aggiunti dopo sono
+    # secondari: se lo store ne sceglie uno, la richiesta va validata dall'EHS Admin.
+    secondario = models.BooleanField(default=False)
 
     class Meta:
         verbose_name = 'Offerta Corso EHS'
@@ -110,6 +113,8 @@ class EHSSessione(models.Model):
         limit_choices_to={'livello_accesso': 'fornitore'},
     )
     motivazione_eccezione = models.TextField(blank=True)
+    # Richiesta a un fornitore secondario del corso: passa anch'essa da IN_APPROVAZIONE.
+    fornitore_secondario = models.BooleanField(default=False)
 
     data_proposta = models.DateTimeField(null=True, blank=True)
     data_confermata = models.DateTimeField(null=True, blank=True)
@@ -127,6 +132,12 @@ class EHSSessione(models.Model):
     # Data facoltativa suggerita dallo store al momento della richiesta, visibile
     # al fornitore come riferimento — non è la data ufficiale (quella è data_proposta).
     data_suggerita_store = models.DateTimeField(null=True, blank=True)
+    # Minimo e massimo di partecipanti, indicati dal fornitore con la proposta di data
+    # (il minimo non è mai sotto PARTECIPANTI_MINIMI). Sotto il minimo l'aula viene
+    # segnalata e poi annullata in automatico (vedi services.controlla_minimo_partecipanti).
+    partecipanti_min = models.PositiveSmallIntegerField(null=True, blank=True)
+    partecipanti_max = models.PositiveSmallIntegerField(null=True, blank=True)
+    avviso_minimo_il = models.DateTimeField(null=True, blank=True)
 
     registro_file = models.FileField(upload_to='ehs/registri/', null=True, blank=True)
 
@@ -317,6 +328,32 @@ class EHSNotificaNuovaRichiesta(models.Model):
 
     def __str__(self):
         return f'Nuova richiesta {self.sessione} — {self.fornitore}'
+
+
+class EHSAvviso(models.Model):
+    """Avviso in app legato a una sessione (popup alla prossima apertura): per il
+    negozio (`negozio`) oppure per un utente preciso, fornitore o EHS Admin (`utente`)."""
+    TIPO_CHOICES = [
+        ('minimo_partecipanti', 'Minimo partecipanti non raggiunto'),
+        ('annullata_minimo', 'Annullata per minimo partecipanti'),
+    ]
+    sessione = models.ForeignKey(EHSSessione, on_delete=models.CASCADE, related_name='avvisi')
+    tipo = models.CharField(max_length=30, choices=TIPO_CHOICES)
+    testo = models.TextField()
+    negozio = models.ForeignKey('stores.Store', on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='ehs_avvisi')
+    utente = models.ForeignKey('users.User', on_delete=models.CASCADE, null=True, blank=True,
+                               related_name='ehs_avvisi')
+    creata_il = models.DateTimeField(auto_now_add=True)
+    letta = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Avviso EHS'
+        verbose_name_plural = 'Avvisi EHS'
+        ordering = ['creata_il']
+
+    def __str__(self):
+        return f'{self.get_tipo_display()} — {self.sessione}'
 
 
 # --- Formazione obbligatoria (matrice ruoli/mansioni e registro) ---------------

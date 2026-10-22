@@ -21,6 +21,7 @@ from users.permissions import IsAdminEHS, IsAdminOrHOEHS
 
 from . import services
 from .models import (
+    EHSAvviso,
     EHSConfigurazione,
     EHSCorso,
     EHSFormazione,
@@ -128,16 +129,23 @@ class EHSCorsoFornitoriView(APIView):
             negozio = Store.objects.filter(pk=negozio_id).first() if negozio_id else None
         if negozio is None:
             return Response({'idonei': [], 'eccezionali': []})
+        secondari = set(corso.offerte.filter(secondario=True).values_list('fornitore_id', flat=True))
+        idonei = EHSFornitoreSerializer(services.fornitori_idonei(corso, negozio), many=True).data
+        for f in idonei:
+            f['secondario'] = f['id'] in secondari
+        # I principali per primi: i secondari richiedono la validazione dell'EHS Admin.
+        idonei.sort(key=lambda f: f['secondario'])
         return Response({
-            'idonei': EHSFornitoreSerializer(services.fornitori_idonei(corso, negozio), many=True).data,
+            'idonei': idonei,
             'eccezionali': EHSFornitoreSerializer(services.fornitori_eccezionali(corso, negozio), many=True).data,
         })
 
 
 class EHSVerificaPartecipanteView(APIView):
-    """GET /ehs/verifica-partecipante/?utente=<id>&corso=<id> — dice se l'utente ha
-    già completato questo corso con formazione ancora valida (non scaduta): usato
-    da Gestione Partecipanti per avvisare prima di una nuova iscrizione ridondante."""
+    """GET /ehs/verifica-partecipante/?utente=<id>&corso=<id>[&evento=<id>] — dice se
+    l'utente ha già questo corso valido (dal registro formazioni) e, se è indicato
+    l'evento, se può iscriversi: un corso valido si rinnova solo negli ultimi
+    GIORNI_RINNOVO_ANTICIPATO giorni prima della scadenza."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -145,20 +153,19 @@ class EHSVerificaPartecipanteView(APIView):
         corso_id = request.query_params.get('corso')
         if not utente_id or not corso_id:
             return Response({'valido': False})
+        utente = get_object_or_404(User, pk=utente_id)
+        corso = get_object_or_404(EHSCorso, pk=corso_id)
+        f = services.ultima_formazione(utente, corso)
         oggi = timezone.now().date()
-        p = (EHSPartecipante.objects
-             .filter(utente_id=utente_id, sessione__corso_id=corso_id,
-                     presente=True, scadenza_formazione__gte=oggi)
-             .select_related('sessione__corso')
-             .order_by('-scadenza_formazione')
-             .first())
-        if not p:
+        if not f or (f.scadenza and f.scadenza < oggi):
             return Response({'valido': False})
-        return Response({
-            'valido': True,
-            'corso_nome': p.sessione.corso.nome,
-            'scadenza_formazione': p.scadenza_formazione,
-        })
+        risposta = {'valido': True, 'corso_nome': corso.nome, 'scadenza_formazione': f.scadenza,
+                    'rinnovabile_dal': services.rinnovabile_dal(f), 'bloccato': False}
+        evento = Evento.objects.filter(pk=request.query_params.get('evento')).first() \
+            if request.query_params.get('evento') else None
+        if evento and risposta['rinnovabile_dal'] and evento.data < risposta['rinnovabile_dal']:
+            risposta['bloccato'] = True
+        return Response(risposta)
 
 
 class EHSSessioneListCreateView(APIView):
@@ -281,7 +288,9 @@ class EHSProponiDataView(BaseEHSSessioneActionView):
         link_online = link_online.strip() if isinstance(link_online, str) else None
         try:
             sessione = services.proponi_data(sessione, request.user, data_proposta, docente_nome, docente_telefono,
-                                             link_online=link_online)
+                                             link_online=link_online,
+                                             partecipanti_min=request.data.get('partecipanti_min'),
+                                             partecipanti_max=request.data.get('partecipanti_max'))
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=403)
         return self.risposta(request, sessione)
@@ -855,8 +864,7 @@ class EHSMatriceView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if request.user.livello_accesso not in RUOLI_LETTURA_OBBLIGHI:
-            return Response(status=403)
+        # La matrice "cosa deve fare chi" è consultabile da tutti gli utenti.
         return Response({
             'corsi': EHSCorsoSerializer(EHSCorso.objects.filter(attivo=True).order_by('nome'), many=True).data,
             'ruoli': [{'id': r.id, 'nome': r.nome} for r in
@@ -960,3 +968,75 @@ class EHSCompletamentoNegozioView(APIView):
         if negozio is None or negozio.pk != pk:
             return Response(status=403)
         return Response(services.completamento_negozio(negozio))
+
+
+class EHSCercaFormazioniView(APIView):
+    """GET /ehs/cerca-formazioni/ — aule confermate ancora da svolgere, di tutti i negozi,
+    con filtri: corso, negozio, citta, dal, al (YYYY-MM-DD), modalita, solo_posti=1.
+    Serve allo store per trovare un'aula a cui iscrivere i propri collaboratori senza
+    scorrere il calendario mese per mese. Il fornitore vede solo le proprie."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.livello_accesso not in RUOLI_EHS:
+            return Response([])
+        qs = (EHSSessione.objects.filter(stato='CONFERMATA', data_confermata__gte=timezone.now())
+              .select_related('corso', 'negozio', 'fornitore').order_by('data_confermata'))
+        if user.livello_accesso == 'fornitore':
+            qs = qs.filter(fornitore=user)
+        p = request.query_params
+        if p.get('corso'):
+            qs = qs.filter(corso_id=p['corso'])
+        if p.get('negozio'):
+            qs = qs.filter(negozio_id=p['negozio'])
+        if p.get('citta'):
+            qs = qs.filter(negozio__comune__icontains=p['citta'].strip())
+        if p.get('dal'):
+            qs = qs.filter(data_confermata__date__gte=p['dal'])
+        if p.get('al'):
+            qs = qs.filter(data_confermata__date__lte=p['al'])
+        if p.get('modalita') in ('PRESENZA', 'ONLINE'):
+            qs = qs.filter(modalita=p['modalita'])
+        risultato = []
+        for s in qs:
+            iscritti = s.partecipanti.count()
+            posti = s.partecipanti_max - iscritti if s.partecipanti_max else None
+            if p.get('solo_posti') == '1' and posti is not None and posti <= 0:
+                continue
+            risultato.append({
+                'id': s.id, 'corso_id': s.corso_id, 'corso_nome': s.corso.nome,
+                'negozio_id': s.negozio_id, 'negozio_nome': s.negozio.nome, 'negozio_comune': s.negozio.comune,
+                'data': s.data_confermata, 'durata_ore': s.durata_ore, 'modalita': s.modalita,
+                'iscritti': iscritti, 'minimo': services.minimo_partecipanti(s), 'massimo': s.partecipanti_max,
+                'posti_liberi': posti, 'evento_id': s.calendario_evento_id,
+                'mio_negozio': user.livello_accesso == 'store' and s.negozio_id == user.store_id,
+            })
+        return Response(risultato)
+
+
+class EHSAvvisoView(APIView):
+    """GET /ehs/avvisi/ — avvisi non letti (minimo partecipanti, annullamenti automatici):
+    lo store riceve quelli del proprio negozio, fornitore ed EHS Admin i propri.
+    PATCH /ehs/avvisi/<pk>/ — segna come letto."""
+    permission_classes = [IsAuthenticated]
+
+    def _qs(self, user):
+        from django.db.models import Q
+        filtro = Q(utente=user)
+        if user.livello_accesso == 'store' and user.store_id:
+            filtro |= Q(negozio_id=user.store_id)
+        return EHSAvviso.objects.filter(filtro, letta=False).select_related('sessione__corso', 'sessione__negozio')
+
+    def get(self, request):
+        return Response([
+            {'id': a.id, 'tipo': a.tipo, 'testo': a.testo, 'sessione_id': a.sessione_id,
+             'corso_nome': a.sessione.corso.nome, 'negozio_nome': a.sessione.negozio.nome, 'creata_il': a.creata_il}
+            for a in self._qs(request.user)
+        ])
+
+    def patch(self, request, pk):
+        avviso = get_object_or_404(self._qs(request.user), pk=pk)
+        avviso.letta = True
+        avviso.save(update_fields=['letta'])
+        return Response({'ok': True})

@@ -8,7 +8,7 @@ from .models import (
     EHSCorso, EHSFormazione, EHSMansione, EHSObbligo, EHSOffertaCorso, EHSPartecipante, EHSSessione,
     EHSSessioneDocumento, EHSSessioneLog,
 )
-from .services import cancellazione_consentita
+from .services import cancellazione_consentita, minimo_partecipanti
 
 User = get_user_model()
 
@@ -33,7 +33,8 @@ class EHSOffertaCorsoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = EHSOffertaCorso
-        fields = ['id', 'fornitore', 'fornitore_nome', 'tutti_negozi', 'negozi', 'negozi_nomi']
+        fields = ['id', 'fornitore', 'fornitore_nome', 'tutti_negozi', 'negozi', 'negozi_nomi', 'secondario']
+        read_only_fields = ['secondario']
 
     def get_fornitore_nome(self, obj):
         return obj.fornitore.fornitore_ragione_sociale or obj.fornitore.nome_completo
@@ -59,6 +60,11 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
         # non è mai modificabile da input client, né in creazione né in modifica.
         extra_kwargs = {'codice': {'read_only': True}}
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['offerte'] = sorted(data['offerte'], key=lambda o: (o['secondario'], o['id']))
+        return data
+
     def get_fornitori_nomi(self, obj):
         return [o.fornitore.fornitore_ragione_sociale or o.fornitore.nome_completo for o in obj.offerte.all()]
 
@@ -80,10 +86,11 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
         return value
 
     def _salva_offerte(self, corso, offerte):
+        # Il primo fornitore dell'elenco è il principale, gli altri sono secondari.
         corso.offerte.all().delete()
-        for o in offerte:
+        for i, o in enumerate(offerte):
             negozi = o.pop('negozi', [])
-            offerta = EHSOffertaCorso.objects.create(corso=corso, **o)
+            offerta = EHSOffertaCorso.objects.create(corso=corso, secondario=i > 0, **o)
             if not offerta.tutti_negozi:
                 offerta.negozi.set(negozi)
 
@@ -157,12 +164,22 @@ class EHSSessioneListSerializer(serializers.ModelSerializer):
             'fornitore', 'fornitore_nome', 'stato', 'stato_display',
             'data_proposta', 'data_confermata', 'data_suggerita_store', 'durata_ore',
             'docente_nome', 'contatto_negozio_nome', 'partecipanti_previsti', 'partecipanti_count',
-            'modalita', 'eccezionale', 'fornitore_richiesto', 'fornitore_richiesto_nome',
+            'modalita', 'eccezionale', 'fornitore_secondario', 'fornitore_richiesto', 'fornitore_richiesto_nome',
+            'partecipanti_min', 'partecipanti_max', 'minimo_effettivo', 'sotto_minimo',
             'attestati_caricati_il', 'creata_il',
         ]
 
+    minimo_effettivo = serializers.SerializerMethodField()
+    sotto_minimo = serializers.SerializerMethodField()
+
     def get_partecipanti_count(self, obj):
         return obj.partecipanti.count()
+
+    def get_minimo_effettivo(self, obj):
+        return minimo_partecipanti(obj)
+
+    def get_sotto_minimo(self, obj):
+        return obj.stato == 'CONFERMATA' and obj.partecipanti.count() < minimo_partecipanti(obj)
 
     def get_fornitore_nome(self, obj):
         return (obj.fornitore.fornitore_ragione_sociale or obj.fornitore.nome_completo) if obj.fornitore_id else None

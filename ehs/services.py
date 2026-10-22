@@ -22,6 +22,13 @@ RUOLI_APPROVAZIONE_ECCEZIONI = ('admin', 'admin_ehs')
 GIORNI_LIMITE_CANCELLAZIONE = 7
 # Finestra del pannello "Alert scadenze" e del popup di scadenza per lo store.
 GIORNI_ALERT_SCADENZA = 45
+# Un'aula non parte mai con meno di PARTECIPANTI_MINIMI iscritti: GIORNI_AVVISO_MINIMO
+# giorni prima della data store, fornitore ed EHS Admin ricevono l'avviso, e se il
+# giorno dopo il minimo non è ancora raggiunto l'aula viene annullata in automatico.
+PARTECIPANTI_MINIMI = 3
+GIORNI_AVVISO_MINIMO = 4
+# Chi ha una formazione ancora valida può rifarla solo negli ultimi N giorni prima della scadenza.
+GIORNI_RINNOVO_ANTICIPATO = 120
 
 
 class TransizioneNonValida(Exception):
@@ -114,6 +121,15 @@ def fornitori_idonei(corso, negozio):
     ).distinct().order_by('fornitore_ragione_sociale')
 
 
+def fornitore_secondario(corso, fornitore):
+    return corso.offerte.filter(fornitore=fornitore, secondario=True).exists()
+
+
+def _richiede_validazione_secondario(utente, corso, fornitore):
+    # L'EHS Admin e l'Admin non devono validare le proprie scelte.
+    return utente.livello_accesso not in RUOLI_APPROVAZIONE_ECCEZIONI and fornitore_secondario(corso, fornitore)
+
+
 def fornitori_eccezionali(corso, negozio):
     """Fornitori attivi che erogano il corso ma NON per questo negozio: richiedibili
     solo con una richiesta eccezionale da approvare dall'EHS Admin."""
@@ -144,8 +160,9 @@ def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_n
         if not fornitori_eccezionali(corso, negozio).filter(pk=fornitore.pk).exists():
             raise TransizioneNonValida('Il fornitore selezionato non è richiedibile in via eccezionale per questo corso.')
     else:
-        if fornitore is None and len(idonei) == 1:
-            fornitore = idonei[0]
+        principali = [f for f in idonei if not fornitore_secondario(corso, f)]
+        if fornitore is None and len(principali) == 1:
+            fornitore = principali[0]
         if fornitore is None:
             if not idonei:
                 raise TransizioneNonValida(
@@ -157,14 +174,17 @@ def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_n
 
     from .models import EHSSessione
 
+    secondario = not eccezionale and _richiede_validazione_secondario(store_user, corso, fornitore)
+    in_approvazione = eccezionale or secondario
     with transaction.atomic():
         sessione = EHSSessione.objects.create(
             corso=corso, negozio=negozio, creata_da=store_user,
-            fornitore=None if eccezionale else fornitore,
-            fornitore_richiesto=fornitore if eccezionale else None,
+            fornitore=None if in_approvazione else fornitore,
+            fornitore_richiesto=fornitore if in_approvazione else None,
             eccezionale=eccezionale,
+            fornitore_secondario=secondario,
             motivazione_eccezione=motivazione_eccezione.strip() if eccezionale else '',
-            stato='IN_APPROVAZIONE' if eccezionale else 'RICHIESTA_INVIATA',
+            stato='IN_APPROVAZIONE' if in_approvazione else 'RICHIESTA_INVIATA',
             modalita=modalita,
             durata_ore=corso.durata_ore,
             contatto_negozio_nome=contatto_negozio_nome,
@@ -176,6 +196,10 @@ def crea_richiesta(store_user, corso, negozio, contatto_negozio_nome, contatto_n
         if eccezionale:
             _log(sessione, '', sessione.stato, store_user,
                  f'Richiesta eccezionale per {_nome_fornitore(fornitore)}: {sessione.motivazione_eccezione}')
+            _email_richiesta_eccezionale(sessione)
+        elif secondario:
+            _log(sessione, '', sessione.stato, store_user,
+                 f'Richiesta al fornitore secondario {_nome_fornitore(fornitore)}: in validazione EHS Admin')
             _email_richiesta_eccezionale(sessione)
         else:
             _log(sessione, '', sessione.stato, store_user,
@@ -198,7 +222,8 @@ def _notifica_nuova_richiesta(sessione, fornitore):
 
 
 def _email_richiesta_eccezionale(sessione):
-    corpo = (f'Lo store {sessione.negozio} ha inviato una richiesta eccezionale da approvare.\n\n'
+    tipo = 'a un fornitore secondario' if sessione.fornitore_secondario else 'eccezionale'
+    corpo = (f'Lo store {sessione.negozio} ha inviato una richiesta {tipo} da approvare.\n\n'
              f'Corso: {sessione.corso.nome}\n'
              f'Fornitore richiesto: {_nome_fornitore(sessione.fornitore_richiesto)}\n'
              f'Motivazione: {sessione.motivazione_eccezione}')
@@ -221,11 +246,21 @@ def assegna_fornitore(sessione, utente, fornitore):
 
     with transaction.atomic():
         stato_precedente = sessione.stato
-        sessione.fornitore = fornitore
-        sessione.stato = 'RICHIESTA_INVIATA'
         sessione.data_proposta = None
         sessione.docente_nome = None
         sessione.docente_telefono = None
+        if _richiede_validazione_secondario(utente, sessione.corso, fornitore):
+            sessione.fornitore = None
+            sessione.fornitore_richiesto = fornitore
+            sessione.fornitore_secondario = True
+            sessione.stato = 'IN_APPROVAZIONE'
+            sessione.save()
+            _log(sessione, stato_precedente, sessione.stato, utente,
+                 f'Richiesta al fornitore secondario {_nome_fornitore(fornitore)}: in validazione EHS Admin')
+            _email_richiesta_eccezionale(sessione)
+            return sessione
+        sessione.fornitore = fornitore
+        sessione.stato = 'RICHIESTA_INVIATA'
         sessione.save()
         _notifica_nuova_richiesta(sessione, fornitore)
         _log(sessione, stato_precedente, sessione.stato, utente,
@@ -307,6 +342,17 @@ def decidi_eccezione(sessione, admin, approva, nota=''):
             _notifica_nuova_richiesta(sessione, fornitore)
             _invia_email(_email_store(sessione), f'Richiesta eccezionale approvata: {_descrizione(sessione)}',
                          f'{testo}.')
+        elif sessione.fornitore_secondario:
+            # Fornitore secondario non validato: la richiesta torna allo store senza
+            # fornitore, così può assegnarla al fornitore principale.
+            sessione.stato = 'RICHIESTA_INVIATA'
+            sessione.fornitore = None
+            sessione.fornitore_secondario = False
+            sessione.save()
+            _log(sessione, 'IN_APPROVAZIONE', sessione.stato, admin, f'Fornitore secondario non validato: {nota}')
+            _invia_email(_email_store(sessione), f'Fornitore secondario non validato: {_descrizione(sessione)}',
+                         f"L'EHS Admin non ha validato il fornitore richiesto.\nMotivo: {nota}\n\n"
+                         f"Assegna la richiesta a un altro fornitore dall'app.")
         else:
             sessione.stato = 'RIFIUTATA'
             sessione.save(update_fields=['stato', 'aggiornata_il'])
@@ -318,16 +364,34 @@ def decidi_eccezione(sessione, admin, approva, nota=''):
 
 # --- Negoziazione data --------------------------------------------------------
 
-def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telefono, link_online=None):
-    """Il fornitore propone data e docente insieme, sia alla prima proposta sia dopo
-    aver rifiutato una contro-proposta (§3: il ciclo può ripetersi finché non si arriva
-    a CONFERMATA tramite l'accettazione di una delle due parti)."""
+def minimo_partecipanti(sessione):
+    return max(PARTECIPANTI_MINIMI, sessione.partecipanti_min or 0)
+
+
+def _valida_min_max(partecipanti_min, partecipanti_max):
+    try:
+        minimo, massimo = int(partecipanti_min), int(partecipanti_max)
+    except (TypeError, ValueError):
+        raise TransizioneNonValida('Indica il numero minimo e massimo di partecipanti.')
+    if minimo < PARTECIPANTI_MINIMI:
+        raise TransizioneNonValida(f'Il minimo di partecipanti non può essere inferiore a {PARTECIPANTI_MINIMI}.')
+    if massimo < minimo:
+        raise TransizioneNonValida('Il massimo di partecipanti non può essere inferiore al minimo.')
+    return minimo, massimo
+
+
+def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telefono, link_online=None,
+                 partecipanti_min=None, partecipanti_max=None):
+    """Il fornitore propone data, docente e minimo/massimo di partecipanti insieme, sia
+    alla prima proposta sia dopo aver rifiutato una contro-proposta (§3: il ciclo può
+    ripetersi finché non si arriva a CONFERMATA tramite l'accettazione di una delle due parti)."""
     if fornitore.livello_accesso not in RUOLI_FORNITORE:
         raise TransizioneNonValida('Solo il Fornitore (o Admin/HO) può proporre una data.')
     if sessione.stato not in ('RICHIESTA_INVIATA', 'DATA_CONTROPROPOSTA'):
         raise TransizioneNonValida(f'Non è possibile proporre una data dallo stato {sessione.stato}.')
     if not docente_nome or not docente_telefono:
         raise TransizioneNonValida('Nome e telefono del docente sono obbligatori.')
+    sessione.partecipanti_min, sessione.partecipanti_max = _valida_min_max(partecipanti_min, partecipanti_max)
     _valida_mezzora(data_proposta, 'Data proposta')
     if link_online is not None:
         sessione.link_online = link_online
@@ -347,7 +411,8 @@ def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telef
         sessione.stato = 'DATA_PROPOSTA'
         sessione.save()
         _log(sessione, stato_precedente, sessione.stato, fornitore,
-             f'Data proposta: {data_proposta} — docente: {docente_nome}')
+             f'Data proposta: {data_proposta} — docente: {docente_nome} — '
+             f'partecipanti min {sessione.partecipanti_min}, max {sessione.partecipanti_max}')
         _notifica_data_proposta(sessione)
     return sessione
 
@@ -386,6 +451,7 @@ def _crea_evento_calendario(sessione):
         attivita=attivita,
         host=host,
         location_store=sessione.negozio,
+        max_partecipanti=sessione.partecipanti_max or 0,
         created_by=sessione.fornitore,
         modalita_partecipazione=ModalitaPartecipazione.ONLINE if online else ModalitaPartecipazione.PRESENZA,
         is_ehs=True,
@@ -533,6 +599,22 @@ def rimuovi_partecipante(sessione, partecipante, utente):
                          f'Lo store ha cancellato l\'iscrizione di {nome} alla formazione del {_fmt(sessione.data_confermata)}.')
 
 
+def _annulla(sessione, utente, nota):
+    """Cascata comune di annullamento: evento di calendario, iscrizioni e partecipanti."""
+    # Import locale: evita una dipendenza a livello di modulo tra le app ehs e participants.
+    from participants.models import Iscrizione
+
+    stato_precedente = sessione.stato
+    sessione.stato = 'ANNULLATA'
+    sessione.save()
+    if sessione.calendario_evento:
+        Iscrizione.objects.filter(evento=sessione.calendario_evento).delete()
+        sessione.calendario_evento.delete()
+    sessione.partecipanti.all().delete()
+    _log(sessione, stato_precedente, 'ANNULLATA', utente, nota)
+    return stato_precedente
+
+
 def annulla_sessione(sessione, utente):
     """Cascata definita in §5: rimuove evento di calendario e iscrizioni collegate,
     senza step di conferma intermedi. Raggiungibile da qualunque stato precedente a
@@ -541,22 +623,8 @@ def annulla_sessione(sessione, utente):
         raise TransizioneNonValida(f'Non è possibile annullare una sessione nello stato {sessione.stato}.')
     _verifica_cancellazione(sessione, utente, 'la formazione')
 
-    # Import locale: evita una dipendenza a livello di modulo tra le app ehs e participants.
-    from participants.models import Iscrizione
-
     with transaction.atomic():
-        stato_precedente = sessione.stato
-        sessione.stato = 'ANNULLATA'
-        sessione.save()
-
-        if sessione.calendario_evento:
-            Iscrizione.objects.filter(evento=sessione.calendario_evento).delete()
-            sessione.calendario_evento.delete()
-
-        sessione.partecipanti.all().delete()
-
-        _log(sessione, stato_precedente, 'ANNULLATA', utente,
-             'Sessione annullata: evento e iscrizioni rimossi automaticamente')
+        stato_precedente = _annulla(sessione, utente, 'Sessione annullata: evento e iscrizioni rimossi automaticamente')
 
         oggetto = f'Formazione annullata: {_descrizione(sessione)}'
         corpo = f'La formazione {_descrizione(sessione)} è stata annullata da {utente.nome_completo}.'
@@ -765,8 +833,101 @@ def esegui_automatismi_giornalieri():
     if not vinto:
         return None
     creati = genera_notifiche_scadenza()
-    logger.info('Automatismi EHS giornalieri: %s notifiche di scadenza create', creati)
+    avvisate, annullate = controlla_minimo_partecipanti()
+    logger.info('Automatismi EHS giornalieri: %s notifiche di scadenza, %s aule sotto il minimo avvisate, '
+                '%s annullate', creati, avvisate, annullate)
     return creati
+
+
+# --- Minimo partecipanti -------------------------------------------------------
+
+def _avvisa(sessione, tipo, testo, oggetto):
+    """Avviso in app + email a negozio richiedente, fornitore ed EHS Admin."""
+    from django.contrib.auth import get_user_model
+    from .models import EHSAvviso
+
+    EHSAvviso.objects.create(sessione=sessione, tipo=tipo, testo=testo, negozio=sessione.negozio)
+    destinatari = list(get_user_model().objects.filter(livello_accesso='admin_ehs', is_active=True))
+    if sessione.fornitore_id:
+        destinatari.append(sessione.fornitore)
+    for u in destinatari:
+        EHSAvviso.objects.create(sessione=sessione, tipo=tipo, testo=testo, utente=u)
+    _invia_email(_email_store(sessione) + _email_fornitore(sessione) + _email_admin_ehs(),
+                 f'{oggetto}: {_descrizione(sessione)}', testo)
+
+
+def controlla_minimo_partecipanti(adesso=None):
+    """Aule confermate sotto il minimo di partecipanti: a GIORNI_AVVISO_MINIMO giorni
+    dalla data parte l'avviso (annullamento entro 24 ore); dal giorno dopo l'avviso,
+    se il minimo non è ancora raggiunto, l'aula viene annullata in automatico.
+    Ritorna (avvisate, annullate)."""
+    from .models import EHSSessione
+
+    adesso = adesso or timezone.now()
+    oggi = timezone.localtime(adesso).date()
+    avvisate = annullate = 0
+    sessioni = (EHSSessione.objects.filter(stato='CONFERMATA', data_confermata__gt=adesso)
+                .select_related('corso', 'negozio', 'fornitore', 'calendario_evento'))
+    for sessione in sessioni:
+        iscritti = sessione.partecipanti.count()
+        minimo = minimo_partecipanti(sessione)
+        if iscritti >= minimo:
+            continue
+        giorni = (timezone.localtime(sessione.data_confermata).date() - oggi).days
+        quando = _fmt(sessione.data_confermata)
+        with transaction.atomic():
+            if sessione.avviso_minimo_il is None:
+                if giorni > GIORNI_AVVISO_MINIMO:
+                    continue
+                sessione.avviso_minimo_il = adesso
+                sessione.save(update_fields=['avviso_minimo_il', 'aggiornata_il'])
+                testo = (f'La formazione {_descrizione(sessione)} del {quando} ha {iscritti} iscritti su un minimo '
+                         f'di {minimo}. Se entro 24 ore non si raggiunge il minimo, la formazione verrà '
+                         f'cancellata automaticamente.')
+                _log(sessione, sessione.stato, sessione.stato, None, f'Avviso minimo partecipanti ({iscritti}/{minimo})')
+                _avvisa(sessione, 'minimo_partecipanti', testo, 'Minimo partecipanti non raggiunto')
+                avvisate += 1
+            elif timezone.localtime(sessione.avviso_minimo_il).date() < oggi:
+                _annulla(sessione, None, f'Annullata automaticamente: {iscritti} iscritti su un minimo di {minimo}')
+                testo = (f'La formazione {_descrizione(sessione)} del {quando} è stata cancellata automaticamente: '
+                         f'{iscritti} iscritti su un minimo di {minimo}.')
+                _avvisa(sessione, 'annullata_minimo', testo, 'Formazione cancellata')
+                annullate += 1
+    return avvisate, annullate
+
+
+# --- Iscrizioni alle aule --------------------------------------------------------
+
+def ultima_formazione(utente, corso):
+    from .models import EHSFormazione
+    return EHSFormazione.objects.filter(utente=utente, corso=corso).order_by('-data').first()
+
+
+def rinnovabile_dal(formazione):
+    """Primo giorno in cui si può rifare un corso ancora valido (None = nessun vincolo)."""
+    if not formazione or not formazione.scadenza:
+        return None
+    return formazione.scadenza - timedelta(days=GIORNI_RINNOVO_ANTICIPATO)
+
+
+def verifica_iscrizione(evento, utente):
+    """Regole per iscrivere una persona a un'aula EHS: posti entro il massimo indicato
+    dal fornitore e, se ha già la formazione valida, rinnovo solo negli ultimi
+    GIORNI_RINNOVO_ANTICIPATO giorni prima della scadenza."""
+    sessione = getattr(evento, 'ehs_sessione', None)
+    if sessione is None:
+        return
+    if sessione.partecipanti_max and sessione.partecipanti.count() >= sessione.partecipanti_max:
+        raise TransizioneNonValida(f'Posti esauriti: massimo {sessione.partecipanti_max} partecipanti.')
+    formazione = ultima_formazione(utente, sessione.corso)
+    dal = rinnovabile_dal(formazione)
+    if dal and evento.data < dal:
+        raise TransizioneNonValida(
+            f'{utente.nome_completo} ha {sessione.corso.nome} valido fino al '
+            f'{formazione.scadenza.strftime("%d/%m/%Y")}: si può rinnovare solo negli ultimi '
+            f'{GIORNI_RINNOVO_ANTICIPATO} giorni prima della scadenza, cioè con un\'aula dal '
+            f'{dal.strftime("%d/%m/%Y")}.'
+        )
 
 
 # --- Formazione obbligatoria ----------------------------------------------------
