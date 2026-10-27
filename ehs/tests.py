@@ -60,6 +60,23 @@ class EHSFlussiTest(TestCase):
         sessione.refresh_from_db()
         return sessione
 
+    # --- eliminazione definitiva ---
+
+    def test_elimina_definitivamente_solo_admin_con_conferma(self):
+        sessione = self._conferma(self._crea())
+        evento_id = sessione.calendario_evento_id
+        self.assertIsNotNone(evento_id)
+        url = f'/api/ehs/sessioni/{sessione.id}/'
+        self.assertEqual(self._client(self.store_user).delete(
+            url, {'conferma': 'ELIMINA DEFINITIVAMENTE'}, format='json').status_code, 403)
+        self.assertEqual(self._client(self.admin_ehs).delete(
+            url, {'conferma': 'elimina'}, format='json').status_code, 400)
+        self.assertEqual(self._client(self.admin_ehs).delete(
+            url, {'conferma': 'ELIMINA DEFINITIVAMENTE'}, format='json').status_code, 204)
+        self.assertFalse(EHSSessione.objects.filter(pk=sessione.id).exists())
+        from events.models import Evento
+        self.assertFalse(Evento.objects.filter(pk=evento_id).exists())
+
     # --- perimetro fornitori ---
 
     def test_fornitori_idonei_ed_eccezionali(self):

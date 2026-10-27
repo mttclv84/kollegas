@@ -640,6 +640,21 @@ def _annulla(sessione, utente, nota):
     return stato_precedente
 
 
+def elimina_sessione(sessione):
+    """Eliminazione definitiva (solo Admin / Admin EHS): rimuove evento di calendario,
+    iscrizioni e la sessione con partecipanti, log e notifiche. Il registro delle
+    formazioni svolte resta: le righe già registrate perdono solo il collegamento."""
+    from participants.models import Iscrizione
+
+    with transaction.atomic():
+        evento = sessione.calendario_evento
+        if evento:
+            Iscrizione.objects.filter(evento=evento).delete()
+        sessione.delete()
+        if evento:
+            evento.delete()
+
+
 def annulla_sessione(sessione, utente):
     """Cascata definita in §5: rimuove evento di calendario e iscrizioni collegate,
     senza step di conferma intermedi. Raggiungibile da qualunque stato precedente a

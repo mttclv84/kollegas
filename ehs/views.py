@@ -268,10 +268,23 @@ class BaseEHSSessioneActionView(APIView):
         return self.risposta(request, sessione)
 
 
+TESTO_CONFERMA_ELIMINAZIONE = 'ELIMINA DEFINITIVAMENTE'
+
+
 class EHSSessioneDetailView(BaseEHSSessioneActionView):
     def get(self, request, pk):
         sessione = self.get_sessione_visibile(request, pk)
         return self.risposta(request, sessione)
+
+    def delete(self, request, pk):
+        """Eliminazione definitiva di una formazione pianificata: solo Admin / Admin EHS,
+        con la frase di conferma digitata per esteso."""
+        if request.user.livello_accesso not in ('admin', 'admin_ehs'):
+            return Response({'detail': 'Solo Admin e Admin EHS possono eliminare una formazione.'}, status=403)
+        if (request.data.get('conferma') or '').strip() != TESTO_CONFERMA_ELIMINAZIONE:
+            return Response({'detail': f'Per confermare digita {TESTO_CONFERMA_ELIMINAZIONE}.'}, status=400)
+        services.elimina_sessione(get_object_or_404(EHSSessione, pk=pk))
+        return Response(status=204)
 
 
 class EHSProponiDataView(BaseEHSSessioneActionView):
