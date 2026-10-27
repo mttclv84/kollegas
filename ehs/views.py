@@ -1,6 +1,8 @@
 import mimetypes
 import random
 
+from django.db import transaction
+from django.db.models import ProtectedError, Q
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -547,8 +549,33 @@ class EHSFornitoreDetailView(APIView):
 
     def delete(self, request, pk):
         fornitore = self.get_object(pk)
+        if request.data.get('definitivo'):
+            return self._elimina_definitivamente(request, fornitore)
         fornitore.is_active = False
         fornitore.save(update_fields=['is_active'])
+        return Response(status=204)
+
+    def _elimina_definitivamente(self, request, fornitore):
+        """Cancellazione definitiva del fornitore (solo Admin / Admin EHS), con la frase
+        di conferma. Bloccata se ha ancora formazioni in corso: vanno prima eliminate o
+        annullate. Le sessioni storiche restano, senza fornitore collegato."""
+        if request.user.livello_accesso not in ('admin', 'admin_ehs'):
+            return Response({'detail': 'Solo Admin e Admin EHS possono eliminare un fornitore.'}, status=403)
+        if (request.data.get('conferma') or '').strip() != TESTO_CONFERMA_ELIMINAZIONE:
+            return Response({'detail': f'Per confermare digita {TESTO_CONFERMA_ELIMINAZIONE}.'}, status=400)
+        in_corso = EHSSessione.objects.filter(
+            Q(fornitore=fornitore) | Q(fornitore_richiesto=fornitore),
+        ).exclude(stato__in=('COMPLETATA', 'ANNULLATA', 'RIFIUTATA')).count()
+        if in_corso:
+            return Response({'detail': f'Il fornitore ha ancora {in_corso} formazioni in corso: '
+                                       'eliminale o annullale prima di cancellarlo.'}, status=400)
+        try:
+            with transaction.atomic():
+                fornitore.ehs_offerte.all().delete()
+                fornitore.delete()
+        except ProtectedError:
+            return Response({'detail': 'Il fornitore è collegato ad altri dati e non può essere eliminato: '
+                                       'puoi solo disattivarlo.'}, status=400)
         return Response(status=204)
 
 

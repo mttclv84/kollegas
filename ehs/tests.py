@@ -77,6 +77,19 @@ class EHSFlussiTest(TestCase):
         from events.models import Evento
         self.assertFalse(Evento.objects.filter(pk=evento_id).exists())
 
+    def test_elimina_fornitore_definitivamente(self):
+        url = f'/api/ehs/fornitori/{self.f_fuori.id}/'
+        corpo = {'definitivo': True, 'conferma': 'ELIMINA DEFINITIVAMENTE'}
+        self.assertEqual(self._client(self.store_user).delete(url, corpo, format='json').status_code, 403)
+        self.assertEqual(self._client(self.admin_ehs).delete(
+            url, {'definitivo': True, 'conferma': 'no'}, format='json').status_code, 400)
+        # Con una formazione in corso il fornitore non si può cancellare.
+        self._crea()
+        r = self._client(self.admin_ehs).delete(f'/api/ehs/fornitori/{self.f_rete.id}/', corpo, format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self._client(self.admin_ehs).delete(url, corpo, format='json').status_code, 204)
+        self.assertFalse(User.objects.filter(pk=self.f_fuori.id).exists())
+
     # --- perimetro fornitori ---
 
     def test_fornitori_idonei_ed_eccezionali(self):
