@@ -1,3 +1,4 @@
+from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -159,6 +160,39 @@ class CompletamentoView(APIView):
             })
 
         return Response({'store': {'id': store.id, 'nome': store.nome}, 'corsi': result})
+
+
+class CompletamentoZoomView(APIView):
+    """ZOOM: per ogni GWU RA-TM e Team Manager del negozio, quali corsi obbligatori
+    ha frequentato (partecipato) e quali gli mancano. Lo store vede solo il proprio."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, store_id):
+        from users.models import User
+        from events.models import AttivitaCatalogo
+        from participants.models import Iscrizione
+
+        if request.user.livello_accesso == 'store' and request.user.store_id != store_id:
+            return Response({'detail': 'Non autorizzato.'}, status=403)
+        store = get_object_or_404(Store, pk=store_id, is_active=True)
+
+        utenti = list(User.objects.filter(
+            store=store, is_active=True, ruolo__nome__in=['GWU RA-TM', 'Team Manager'],
+        ).select_related('ruolo').order_by('ruolo__nome', 'cognome', 'nome'))
+        corsi = [a for a in (AttivitaCatalogo.objects.filter(nome=n).first() for n in GWU_CORSI_OBBLIGATORI) if a]
+        fatti = set(Iscrizione.objects.filter(
+            evento__attivita__in=corsi, stato='partecipato', user__in=utenti,
+        ).values_list('user_id', 'evento__attivita_id'))
+
+        return Response({
+            'store': {'id': store.id, 'nome': store.nome},
+            'corsi': [{'id': a.id, 'nome_breve': a.nome.split('/')[1].split('|')[0].strip() if '/' in a.nome else a.nome}
+                      for a in corsi],
+            'utenti': [{
+                'id': u.id, 'cognome': u.cognome, 'nome': u.nome, 'ruolo': u.ruolo.nome,
+                'fatti': [a.id for a in corsi if (u.id, a.id) in fatti],
+            } for u in utenti],
+        })
 
 
 class MappingView(APIView):
