@@ -41,3 +41,20 @@ class AuditAutomaticoTest(TestCase):
         r = APIClient().post('/api/auth/login/', {'email': 's@x.it', 'password': 'x'}, format='json')
         self.assertEqual(r.status_code, 200)
         self.assertEqual(AuditLog.objects.get().azione, 'accesso')
+
+
+class StatsOrePersonaTest(TestCase):
+    def test_ore_per_persone_e_ns_come_donne(self):
+        from participants.models import Iscrizione
+        from .views import _compute_stats
+        evento = Evento.objects.create(  # 9-13 meno pausa = 3 ore
+            data=date(2026, 1, 10), ora_inizio=time(9), ora_fine=time(13),
+            attivita=AttivitaCatalogo.objects.create(nome='Corso', tipologia='ld'),
+            host=Host.objects.create(descrizione='T', posizione='interno'))
+        for i, sesso in enumerate(['M', 'F', 'NS']):
+            u = User.objects.create_user(email=f'u{i}@x.it', password='x', cognome=f'C{i}', nome='N', sesso=sesso,
+                                         is_active=(sesso != 'NS'))
+            Iscrizione.objects.create(evento=evento, user=u, stato='partecipato')
+        _, totale = _compute_stats({})
+        self.assertEqual(totale['ore_erogate'], 9.0)  # 3 ore x 3 persone, disattivati compresi
+        self.assertEqual((totale['maschi'], totale['femmine'], totale['ns']), (1, 2, 0))

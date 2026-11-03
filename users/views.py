@@ -466,9 +466,11 @@ def _compute_stats(query_params):
             .values_list('attivita_id', 'n')
         )
 
+    # Chi non ha il sesso indicato (N.S. o vuoto) viene conteggiato tra le donne.
     maschi_map   = part_by_sesso('M')
     femmine_map  = part_by_sesso('F')
-    ns_map       = part_by_sesso('NS')
+    for att_id, n in part_by_sesso('NS').items():
+        femmine_map[att_id] = femmine_map.get(att_id, 0) + n
     presenza_map = mod_count('presenza')
     online_map   = mod_count('online')
     blended_map  = mod_count('blended')
@@ -478,7 +480,7 @@ def _compute_stats(query_params):
     ore_maschi_map = defaultdict(float)
     ore_femmine_map = defaultdict(float)
     for g in (Iscrizione.objects.filter(
-        evento__in=eventi_qs, stato='partecipato', user__sesso__in=['M', 'F']
+        evento__in=eventi_qs, stato='partecipato'
     ).values('evento_id', 'user__sesso').annotate(n=Count('id'))):
         ore_ev, att_id = event_data.get(g['evento_id'], (0, None))
         if att_id is None:
@@ -495,12 +497,13 @@ def _compute_stats(query_params):
             'attivita_id': att_id,
             'attivita_nome': row['attivita__nome'],
             'num_edizioni': row['edizioni'],
-            'ore_erogate': round(float(row['ore']), 2),
+            # Ore erogate = ore della formazione x persone presenti (ore-persona).
+            'ore_erogate': round(ore_maschi_map.get(att_id, 0) + ore_femmine_map.get(att_id, 0), 2),
             'maschi': maschi_map.get(att_id, 0),
             'ore_maschi': round(ore_maschi_map.get(att_id, 0), 2),
             'femmine': femmine_map.get(att_id, 0),
             'ore_femmine': round(ore_femmine_map.get(att_id, 0), 2),
-            'ns': ns_map.get(att_id, 0),
+            'ns': 0,
             'presenza': presenza_map.get(att_id, 0),
             'online': online_map.get(att_id, 0),
             'blended': blended_map.get(att_id, 0),
