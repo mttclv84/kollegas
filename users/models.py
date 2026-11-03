@@ -151,6 +151,7 @@ class AuditLog(models.Model):
         ('elimina', 'Eliminazione'),
         ('disattiva', 'Disattivazione'),
         ('riattiva', 'Riattivazione'),
+        ('accesso', 'Accesso'),
     ]
 
     actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='azioni_log')

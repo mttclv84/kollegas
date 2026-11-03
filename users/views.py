@@ -416,7 +416,7 @@ class AuditLogListView(generics.ListAPIView):
             qs = qs.filter(created_at__date__gte=p['data_da'])
         if p.get('data_a'):
             qs = qs.filter(created_at__date__lte=p['data_a'])
-        return qs[:500]
+        return qs[:2000]
 
 
 def _compute_stats(query_params):

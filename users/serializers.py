@@ -26,6 +26,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'store_nome': str(self.user.store) if self.user.store else None,
             'foto': self.user.foto.url if self.user.foto else None,
         }
+        AuditLog.objects.create(actor=self.user, azione='accesso', target_tipo='Accesso',
+                                target_id=self.user.id, target_repr=self.user.nome_completo)
         return data
 
 
@@ -138,9 +140,10 @@ class RichiestaEliminazioneProfiloSerializer(serializers.ModelSerializer):
 
 class AuditLogSerializer(serializers.ModelSerializer):
     actor_nome = serializers.CharField(source='actor.nome_completo', read_only=True)
+    actor_livello = serializers.CharField(source='actor.get_livello_accesso_display', read_only=True)
 
     class Meta:
         model = AuditLog
-        fields = ['id', 'actor', 'actor_nome', 'azione', 'target_tipo', 'target_id', 'target_repr', 'dettaglio', 'created_at']
+        fields = ['id', 'actor', 'actor_nome', 'actor_livello', 'azione', 'target_tipo', 'target_id', 'target_repr', 'dettaglio', 'created_at']
 
 
