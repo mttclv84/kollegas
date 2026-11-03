@@ -531,17 +531,10 @@ class StatsView(APIView):
     permission_classes = [IsAdminOrHOOrAreaEHS]
 
     def get(self, request):
-        import hashlib, json
-        from django.core.cache import cache
-        params = dict(request.query_params)
-        cache_key = 'stats_' + hashlib.md5(json.dumps(sorted(params.items())).encode()).hexdigest()
-        cached = cache.get(cache_key)
-        if cached:
-            return Response(cached)
+        # Calcolo sempre al momento: con la cache le presenze appena segnate o
+        # i dati appena importati comparivano solo dopo un'ora.
         result, totale = _compute_stats(request.query_params)
-        payload = {'totale': totale, 'per_attivita': result}
-        cache.set(cache_key, payload, timeout=3600)
-        return Response(payload)
+        return Response({'totale': totale, 'per_attivita': result})
 
 
 class StatsExportView(APIView):
