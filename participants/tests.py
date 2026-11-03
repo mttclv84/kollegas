@@ -77,6 +77,20 @@ class IscrizionePostiTest(TestCase):
         self.evento.save()
         self.assertEqual(self._iscrivi(self.store_b, self.persona_b).status_code, 201)
 
+    def test_export_excel_dettaglio(self):
+        from io import BytesIO
+        import openpyxl
+        self.assertEqual(self._iscrivi(self.store_b, self.persona_b).status_code, 201)
+        c = APIClient()
+        c.force_authenticate(self.store_b)
+        r = c.get('/api/report/excel/')
+        self.assertEqual(r.status_code, 200)
+        ws = openpyxl.load_workbook(BytesIO(r.content)).active
+        self.assertEqual(ws.cell(row=1, column=6).value, 'Collaboratore')
+        self.assertEqual(ws.max_row, 2)  # lo store vede solo il proprio personale
+        self.assertEqual(ws.cell(row=2, column=6).value, 'Verdi Bruno')
+        self.assertEqual(ws.cell(row=2, column=10).value, 'Iscritto')
+
     def test_senza_limite_posti(self):
         self.evento.max_partecipanti = 0
         self.evento.save()

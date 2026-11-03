@@ -149,10 +149,14 @@ class ReportView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user = request.user
-        if user.livello_accesso == 'base':
+        if request.user.livello_accesso == 'base':
             return Response({'detail': 'Accesso negato.'}, status=403)
+        serializer = IscrizioneSerializer(self.get_queryset(request), many=True)
+        return Response(serializer.data)
 
+    @staticmethod
+    def get_queryset(request):
+        user = request.user
         qs = Iscrizione.objects.select_related(
             'user', 'user__store', 'user__ruolo',
             'evento', 'evento__attivita', 'evento__location_store'
@@ -170,9 +174,62 @@ class ReportView(APIView):
             qs = qs.filter(user__ruolo_id=params['ruolo'])
         if params.get('store') and user.livello_accesso in ('admin', 'admin_ehs', 'ho', 'area'):
             qs = qs.filter(user__store_id=params['store'])
+        return qs.order_by('-evento__data')
 
-        serializer = IscrizioneSerializer(qs.order_by('-evento__data'), many=True)
-        return Response(serializer.data)
+
+class ReportExcelView(APIView):
+    """GET /report/excel/ — stesse righe e filtri del Dettaglio, in un file Excel
+    pronto da leggere: intestazione fissa, filtri sulle colonne, stato colorato."""
+    permission_classes = [IsAuthenticated]
+
+    COLONNE = [('Data', 12), ('Attività', 48), ('Ore', 7), ('Tipologia', 12), ('Store', 26),
+               ('Collaboratore', 30), ('Ruolo', 22), ('Sesso', 7), ('Location', 30), ('Stato', 13)]
+    TIPOLOGIE = {'ld': 'L&D', 'recruiting': 'Recruiting', 'ehs': 'EHS', 'payroll': 'Payroll', 'altro': 'Altro'}
+    STATI = {'partecipato': ('Partecipato', 'D1FAE5'), 'assente': ('Assente', 'FEE2E2'), 'iscritto': ('Iscritto', 'DBEAFE')}
+
+    def get(self, request):
+        from io import BytesIO
+        from django.http import HttpResponse
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+
+        if request.user.livello_accesso == 'base':
+            return Response({'detail': 'Accesso negato.'}, status=403)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Dettaglio'
+        ws.append([nome for nome, _ in self.COLONNE])
+        for i, (_, larghezza) in enumerate(self.COLONNE, start=1):
+            cella = ws.cell(row=1, column=i)
+            cella.font = Font(bold=True, color='FFFFFF')
+            cella.fill = PatternFill('solid', fgColor='1F2937')
+            cella.alignment = Alignment(vertical='center')
+            ws.column_dimensions[cella.column_letter].width = larghezza
+
+        for isc in ReportView.get_queryset(request):
+            ev, u = isc.evento, isc.user
+            stato, colore = self.STATI.get(isc.stato, (isc.stato, None))
+            ws.append([
+                ev.data, ev.attivita.nome, float(ev.ore_totali) if ev.ore_totali else None,
+                self.TIPOLOGIE.get(ev.attivita.tipologia, ev.attivita.tipologia),
+                u.store.nome if u.store else '', f'{u.cognome} {u.nome}',
+                u.ruolo.nome if u.ruolo else '', u.sesso or '', ev.location_display or '', stato,
+            ])
+            ws.cell(row=ws.max_row, column=1).number_format = 'DD/MM/YYYY'
+            if colore:
+                ws.cell(row=ws.max_row, column=10).fill = PatternFill('solid', fgColor=colore)
+
+        ws.freeze_panes = 'A2'
+        ws.auto_filter.ref = ws.dimensions
+        buffer = BytesIO()
+        wb.save(buffer)
+        risposta = HttpResponse(
+            buffer.getvalue(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        risposta['Content-Disposition'] = f'attachment; filename="dettaglio_{date.today():%Y%m%d}.xlsx"'
+        return risposta
 
 
 class RichiestaCancellazioneListCreateView(APIView):
