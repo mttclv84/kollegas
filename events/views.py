@@ -12,6 +12,7 @@ from users.permissions import IsAdminOrHO, IsAdminOrHOEHS, IsAdminOrHOOrArea, Is
 
 class HostListCreateView(generics.ListCreateAPIView):
     serializer_class = HostSerializer
+    pagination_class = None  # elenco completo per tendine e gestione
     queryset = Host.objects.filter(is_active=True)
 
     def get_permissions(self):
@@ -32,6 +33,7 @@ class HostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 class AttivitaCatalogoListCreateView(generics.ListCreateAPIView):
     serializer_class = AttivitaCatalogoSerializer
+    pagination_class = None  # elenco completo: oltre 50 voci la paginazione nascondeva attività
     queryset = AttivitaCatalogo.objects.filter(is_active=True).prefetch_related('ruoli_destinatari')
 
     def get_permissions(self):
