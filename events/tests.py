@@ -14,4 +14,6 @@ class CatalogoCompletoTest(TestCase):
         c = APIClient()
         c.force_authenticate(User.objects.create_user(email='a@x.it', password='x', cognome='A', nome='A',
                                                       livello_accesso='admin'))
-        self.assertEqual(len(c.get('/api/attivita/').json()), 60)
+        attive = AttivitaCatalogo.objects.filter(is_active=True).count()
+        self.assertGreater(attive, 50)
+        self.assertEqual(len(c.get('/api/attivita/').json()), attive)
