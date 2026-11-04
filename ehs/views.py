@@ -418,7 +418,7 @@ class EHSLinkOnlineView(BaseEHSSessioneActionView):
 
 class EHSRimuoviPartecipanteView(BaseEHSSessioneActionView):
     """DELETE /ehs/sessioni/<pk>/partecipanti/<partecipante_id>/ — cancella l'iscrizione
-    (store, fornitore o Admin), fino a 7 giorni prima della formazione."""
+    (store, fornitore o Admin), fino a 3 giorni prima della formazione."""
     def delete(self, request, pk, partecipante_id):
         sessione = self.get_sessione_visibile(request, pk)
         partecipante = get_object_or_404(EHSPartecipante.objects.select_related('utente'),

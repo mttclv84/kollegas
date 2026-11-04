@@ -10,10 +10,10 @@ from .models import Iscrizione, RichiestaCancellazione
 from .serializers import IscrizioneSerializer, RichiestaCancellazioneSerializer
 from users.permissions import IsAdminOrHOEHS, IsAdminOrHOOrArea, CanManageUsers, IsAdminOrHOOrAreaEHS
 
-GIORNI_BLOCCO = 20
-# Per le formazioni EHS lo store può cancellare un iscritto fino a 7 giorni prima
+GIORNI_BLOCCO = 12
+# Per le formazioni EHS lo store può cancellare un iscritto fino a 3 giorni prima
 # (vedi ehs.services.GIORNI_LIMITE_CANCELLAZIONE); dopo serve una richiesta di cancellazione.
-GIORNI_BLOCCO_EHS = 7
+GIORNI_BLOCCO_EHS = 3
 TIPOLOGIA_EHS = 'ehs'
 
 

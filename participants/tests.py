@@ -100,3 +100,14 @@ class IscrizionePostiTest(TestCase):
     def test_account_negozio_non_iscrivibile(self):
         r = self._iscrivi(self.store_a, self.store_a)
         self.assertEqual(r.status_code, 400)
+
+    def test_store_cancella_fino_a_12_giorni_prima(self):
+        c = APIClient()
+        c.force_authenticate(self.store_b)
+        for giorni, atteso in ((13, 204), (11, 403)):
+            self.evento.data = date.today() + timedelta(days=giorni)
+            self.evento.save()
+            self.assertEqual(self._iscrivi(self.store_b, self.persona_b).status_code, 201)
+            iscrizione = self.evento.iscrizioni.get()
+            self.assertEqual(c.delete(f'/api/iscrizioni/{iscrizione.id}/').status_code, atteso)
+            iscrizione.delete()

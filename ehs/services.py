@@ -19,7 +19,7 @@ RUOLI_APPROVAZIONE_ECCEZIONI = ('admin', 'admin_ehs')
 
 # Store e fornitore possono cancellare iscritti o l'intera formazione confermata solo
 # fino a questo numero di giorni prima della data; dopo resta possibile solo all'Admin.
-GIORNI_LIMITE_CANCELLAZIONE = 7
+GIORNI_LIMITE_CANCELLAZIONE = 3
 # Finestra del pannello "Alert scadenze" e del popup di scadenza per lo store.
 GIORNI_ALERT_SCADENZA = 45
 # Un'aula non parte mai con meno di PARTECIPANTI_MINIMI iscritti: GIORNI_AVVISO_MINIMO
