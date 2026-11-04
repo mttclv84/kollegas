@@ -70,3 +70,10 @@ class CompletamentoZoomTest(TestCase):
         self.assertEqual(r['corsi'][0]['nome_breve'], 'Valutazione e Feedback')
         self.assertEqual(r['utenti'][0]['fatti'], [corso.id])
         self.assertEqual(c.get(f'/api/stores/{altro.id}/completamento/zoom/').status_code, 403)
+        # Iscritta (non ancora svolto) a un altro corso: compare la data dell'aula.
+        corso2 = AttivitaCatalogo.objects.create(nome='GWU RA-TM / Report&Sistemi | OBBLIGATORIO', tipologia='ld')
+        ev2 = Evento.objects.create(data=date(2026, 12, 3), ora_inizio=time(9), ora_fine=time(13), attivita=corso2,
+                                    host=Host.objects.first())
+        Iscrizione.objects.create(evento=ev2, user=anna, stato='iscritto')
+        r = c.get(f'/api/stores/{negozio.id}/completamento/zoom/').json()
+        self.assertEqual(r['utenti'][0]['iscritti'], {str(corso2.id): '2026-12-03'})

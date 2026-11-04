@@ -456,7 +456,8 @@ def _crea_evento_calendario(sessione):
     (FK obbligatoria, vedi ricognizione step 1). L'Attività Catalogo è invece agganciata al
     nome dello specifico corso EHS (non più a una voce fissa 'EHS' generica): così Report e
     Stats, che raggruppano per attività, mostrano il dettaglio per singolo corso EHS."""
-    from events.models import AttivitaCatalogo, Evento, Host, ModalitaPartecipazione, TipologiaAttivita
+    from events.models import (AttivitaCatalogo, Evento, Host, ModalitaPartecipazione, TipologiaAttivita,
+                               copre_pausa_pranzo)
 
     host, _ = Host.objects.get_or_create(
         descrizione='Fornitore Esterno EHS', defaults={'posizione': 'esterno'}
@@ -467,6 +468,10 @@ def _crea_evento_calendario(sessione):
 
     inizio = timezone.localtime(sessione.data_confermata)
     fine = inizio + timedelta(hours=float(sessione.durata_ore))
+    # La durata del corso è al netto della pausa pranzo: se l'aula la attraversa, finisce un'ora dopo.
+    con_pausa = fine + timedelta(hours=1)
+    if con_pausa.date() == inizio.date() and copre_pausa_pranzo(inizio.time(), fine.time()):
+        fine = con_pausa
     online = sessione.modalita == 'ONLINE'
 
     evento = Evento.objects.create(

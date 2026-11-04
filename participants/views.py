@@ -72,6 +72,9 @@ class IscrizioneListCreateView(generics.ListCreateAPIView):
         target_user = User.objects.get(pk=target_user_id)
         if user.livello_accesso == 'store' and target_user.store_id != user.store_id:
             self.permission_denied(self.request, message='Puoi iscrivere solo collaboratori del tuo store.')
+        # Gli account di servizio (negozio, fornitore) non sono persone da formare.
+        if target_user.livello_accesso in ('store', 'fornitore'):
+            raise ValidationError({'detail': 'Questo account non può essere iscritto a una formazione.'})
         evento = serializer.validated_data['evento']
         if aula_chiusa(evento, user):
             self.permission_denied(self.request, message=MSG_AULA_CHIUSA)

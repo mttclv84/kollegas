@@ -96,3 +96,7 @@ class IscrizionePostiTest(TestCase):
         self.evento.save()
         self.assertEqual(self._iscrivi(self.store_b, self.persona_b).status_code, 201)
         self.assertEqual(self._iscrivi(self.store_a, self.persona_a).status_code, 201)
+
+    def test_account_negozio_non_iscrivibile(self):
+        r = self._iscrivi(self.store_a, self.store_a)
+        self.assertEqual(r.status_code, 400)

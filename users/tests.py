@@ -47,7 +47,7 @@ class StatsOrePersonaTest(TestCase):
     def test_ore_per_persone_e_ns_come_donne(self):
         from participants.models import Iscrizione
         from .views import _compute_stats
-        evento = Evento.objects.create(  # 9-13 meno pausa = 3 ore
+        evento = Evento.objects.create(  # 9-13, senza pausa pranzo = 4 ore
             data=date(2026, 1, 10), ora_inizio=time(9), ora_fine=time(13),
             attivita=AttivitaCatalogo.objects.create(nome='Corso', tipologia='ld'),
             host=Host.objects.create(descrizione='T', posizione='interno'))
@@ -56,5 +56,5 @@ class StatsOrePersonaTest(TestCase):
                                          is_active=(sesso != 'NS'))
             Iscrizione.objects.create(evento=evento, user=u, stato='partecipato')
         _, totale = _compute_stats({})
-        self.assertEqual(totale['ore_erogate'], 9.0)  # 3 ore x 3 persone, disattivati compresi
+        self.assertEqual(totale['ore_erogate'], 12.0)  # 4 ore x 3 persone, disattivati compresi
         self.assertEqual((totale['maschi'], totale['femmine'], totale['ns']), (1, 2, 0))

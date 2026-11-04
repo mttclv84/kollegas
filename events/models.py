@@ -1,6 +1,15 @@
+from datetime import time
 from django.db import models
 from django.db.models import Q
 
+
+
+PAUSA_PRANZO = (time(13, 0), time(14, 0))
+
+
+def copre_pausa_pranzo(ora_inizio, ora_fine):
+    """L'ora di pausa pranzo si toglie solo se la formazione copre tutta la fascia 13:00-14:00."""
+    return ora_inizio <= PAUSA_PRANZO[0] and ora_fine >= PAUSA_PRANZO[1]
 
 class TipologiaAttivita(models.TextChoices):
     LD = 'ld', 'L&D'
@@ -112,8 +121,9 @@ class Evento(models.Model):
         inizio = datetime.combine(date.today(), self.ora_inizio)
         fine = datetime.combine(date.today(), self.ora_fine)
         delta = fine - inizio
-        minuti_totali = delta.seconds // 60
-        minuti_effettivi = minuti_totali - 60  # pausa pranzo
+        minuti_effettivi = delta.seconds // 60
+        if copre_pausa_pranzo(self.ora_inizio, self.ora_fine):
+            minuti_effettivi -= 60
         self.ore_totali = round(max(0, minuti_effettivi) / 60, 2)
 
     @property

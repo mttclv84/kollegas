@@ -183,6 +183,12 @@ class CompletamentoZoomView(APIView):
         fatti = set(Iscrizione.objects.filter(
             evento__attivita__in=corsi, stato='partecipato', user__in=utenti,
         ).values_list('user_id', 'evento__attivita_id'))
+        # Iscritti a un'aula non ancora svolta: data dell'aula, per mostrarla al posto del trattino.
+        iscritti = {}
+        for user_id, att_id, data in Iscrizione.objects.filter(
+            evento__attivita__in=corsi, stato='iscritto', user__in=utenti,
+        ).order_by('evento__data').values_list('user_id', 'evento__attivita_id', 'evento__data'):
+            iscritti.setdefault((user_id, att_id), data)
 
         return Response({
             'store': {'id': store.id, 'nome': store.nome},
@@ -191,6 +197,8 @@ class CompletamentoZoomView(APIView):
             'utenti': [{
                 'id': u.id, 'cognome': u.cognome, 'nome': u.nome, 'ruolo': u.ruolo.nome,
                 'fatti': [a.id for a in corsi if (u.id, a.id) in fatti],
+                'iscritti': {a.id: iscritti[(u.id, a.id)] for a in corsi
+                             if (u.id, a.id) in iscritti and (u.id, a.id) not in fatti},
             } for u in utenti],
         })
 

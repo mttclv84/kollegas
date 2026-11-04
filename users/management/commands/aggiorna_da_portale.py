@@ -278,7 +278,9 @@ class Command(BaseCommand):
 
             evento = self.trova_evento(data, att, loc_store, loc_esterna, u)
             if evento is None:
-                minuti = int(float(ore or 8) * 60) + 60  # +60 pausa pranzo
+                minuti = int(float(ore or 8) * 60)
+                if minuti > 4 * 60:  # dalle 9:00 oltre le 13:00: si aggiunge l'ora di pausa pranzo
+                    minuti += 60
                 ora_fine = (datetime.datetime(2000, 1, 1, 9) + datetime.timedelta(minutes=minuti)).time()
                 evento = Evento.objects.create(
                     data=data, attivita=att, ora_inizio=datetime.time(9), ora_fine=ora_fine, host=host_storico,
