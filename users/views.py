@@ -330,6 +330,10 @@ class PercorsoCrescitaDeleteView(APIView):
         return Response(status=204)
 
 
+# Il profilo in sola lettura (guest) vede in Development solo questo percorso di esempio.
+COGNOME_DEVELOPMENT_GUEST = 'Alaimo'
+
+
 class DevelopmentSearchView(APIView):
     permission_classes = [IsAdminOrHOOrAreaEHS]
 
@@ -348,6 +352,8 @@ class DevelopmentSearchView(APIView):
             qs = qs.filter(ruolo_id=ruolo_id)
         if store_id:
             qs = qs.filter(store_id=store_id)
+        if request.user.sola_lettura:
+            qs = qs.filter(cognome__iexact=COGNOME_DEVELOPMENT_GUEST)
 
         serializer = UserListSerializer(qs[:50], many=True)
         return Response(serializer.data)
@@ -360,6 +366,8 @@ class UserDevelopmentDetailView(APIView):
         try:
             user = User.objects.select_related('store', 'ruolo').get(pk=pk)
         except User.DoesNotExist:
+            return Response({'detail': 'Non trovato.'}, status=404)
+        if request.user.sola_lettura and user.cognome.lower() != COGNOME_DEVELOPMENT_GUEST.lower():
             return Response({'detail': 'Non trovato.'}, status=404)
         percorso = PercorsoCrescita.objects.filter(user=user).select_related('created_by').order_by('-data')
 

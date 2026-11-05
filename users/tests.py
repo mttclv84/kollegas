@@ -90,3 +90,12 @@ class SolaLetturaTest(TestCase):
     def test_password_non_visibili(self):
         guest = User.objects.get(email='guest@primark.it')
         self.assertIsNone(self.c.get(f'/api/users/{guest.id}/').data.get('raw_password'))
+
+    def test_development_solo_alaimo(self):
+        negozio = Store.objects.create(nome='Torino', comune='Torino', provincia='TO', email_store='to@x.it')
+        alaimo = User.objects.create_user(email='a@x.it', password='x', cognome='Alaimo', nome='Valentina', store=negozio)
+        altro = User.objects.create_user(email='b@x.it', password='x', cognome='Rossi', nome='Valentina', store=negozio)
+        r = self.c.get('/api/users/search/', {'nome': 'Valentina'})
+        self.assertEqual([u['id'] for u in r.data], [alaimo.id])
+        self.assertEqual(self.c.get(f'/api/users/{alaimo.id}/development/').status_code, 200)
+        self.assertEqual(self.c.get(f'/api/users/{altro.id}/development/').status_code, 404)
