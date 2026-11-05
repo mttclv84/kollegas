@@ -89,13 +89,23 @@ class SolaLetturaTest(TestCase):
 
     def test_password_non_visibili(self):
         guest = User.objects.get(email='guest@primark.it')
-        self.assertIsNone(self.c.get(f'/api/users/{guest.id}/').data.get('raw_password'))
+        self.assertFalse(self.c.get(f'/api/users/{guest.id}/').json().get('raw_password'))
 
     def test_development_solo_alaimo(self):
         negozio = Store.objects.create(nome='Torino', comune='Torino', provincia='TO', email_store='to@x.it')
         alaimo = User.objects.create_user(email='a@x.it', password='x', cognome='Alaimo', nome='Valentina', store=negozio)
         altro = User.objects.create_user(email='b@x.it', password='x', cognome='Rossi', nome='Valentina', store=negozio)
-        r = self.c.get('/api/users/search/', {'nome': 'Valentina'})
-        self.assertEqual([u['id'] for u in r.data], [alaimo.id])
+        r = self.c.get('/api/users/search/', {'nome': 'Rossi Mario'})
+        self.assertEqual([u['id'] for u in r.json()], [alaimo.id])
         self.assertEqual(self.c.get(f'/api/users/{alaimo.id}/development/').status_code, 200)
         self.assertEqual(self.c.get(f'/api/users/{altro.id}/development/').status_code, 404)
+
+    def test_dati_personali_anonimizzati(self):
+        negozio = Store.objects.create(nome='Torino', comune='Torino', provincia='TO', email_store='to@x.it',
+                                       portale_password='segreta')
+        persona = User.objects.create_user(email='v.verdi@x.it', password='x', cognome='Verdi', nome='Bruno',
+                                           store=negozio, telefono='333', codice_matricola='M1')
+        u = self.c.get(f'/api/users/{persona.id}/').json()
+        self.assertEqual((u['cognome'], u['nome'], u['email'], u['codice_matricola']), ('Rossi', 'Mario', '', ''))
+        s = self.c.get(f'/api/stores/{negozio.id}/').json()
+        self.assertEqual((s['nome'], s['email_store'], s['portale_password']), ('Torino', '', ''))

@@ -97,7 +97,8 @@ class AuditMiddleware:
 
 class SolaLetturaMiddleware:
     """Profili in sola lettura (es. guest): rifiuta ogni richiesta che modifica dati
-    e i download di export. Sono consentiti solo login/logout e la lettura delle notifiche."""
+    e i download di export. Sono consentiti solo login/logout e la lettura delle notifiche.
+    Nelle risposte lette i dati personali vengono sostituiti (vedi anonimizza)."""
 
     CONSENTITI = re.compile(r'^/api/auth/|notifiche')
     EXPORT = re.compile(r'/report/excel/|/stats/export/')
@@ -107,12 +108,21 @@ class SolaLetturaMiddleware:
 
     def __call__(self, request):
         path = request.path
+        if not path.startswith('/api/') or path.startswith('/api/auth/') or not self._sola_lettura(request):
+            return self.get_response(request)
         scrittura = request.method not in ('GET', 'HEAD', 'OPTIONS')
-        if (path.startswith('/api/') and not self.CONSENTITI.search(path)
-                and (scrittura or self.EXPORT.search(path)) and self._sola_lettura(request)):
+        if not self.CONSENTITI.search(path) and (scrittura or self.EXPORT.search(path)):
             from django.http import JsonResponse
             return JsonResponse({'detail': 'Profilo in sola lettura: operazione non consentita.'}, status=403)
-        return self.get_response(request)
+        response = self.get_response(request)
+        if 'json' in response.get('Content-Type', '') and not getattr(response, 'streaming', False):
+            try:
+                dati = anonimizza(json.loads(response.content), host='/api/host' in path)
+            except ValueError:
+                return response
+            response.content = json.dumps(dati, ensure_ascii=False).encode('utf-8')
+            response['Content-Length'] = str(len(response.content))
+        return response
 
     @staticmethod
     def _sola_lettura(request):
@@ -122,3 +132,47 @@ class SolaLetturaMiddleware:
         except Exception:
             return False
         return bool(esito and esito[0].sola_lettura)
+
+
+# ── Anonimizzazione per i profili in sola lettura: ogni persona diventa "Rossi Mario" ──
+COGNOME_FINTO, NOME_FINTO = 'Rossi', 'Mario'
+NOME_COMPLETO_FINTO = f'{COGNOME_FINTO} {NOME_FINTO}'
+CAMPI_NOME_COMPLETO = {
+    'nome_completo', 'utente_nome', 'richiedente_nome', 'processed_by_nome', 'created_by_nome',
+    'creata_da_nome', 'actor_nome', 'partecipante_nome', 'snap_partecipante_nome', 'snap_nome',
+    'snap_nome_utente', 'snap_creato_da', 'docente_nome', 'contatto_negozio_nome', 'host_nome',
+    'area_manager_retail', 'area_bp',
+}
+CAMPI_SVUOTATI = {'telefono', 'docente_telefono', 'contatto_negozio_telefono', 'codice_matricola',
+                  'portale_password', 'raw_password', 'foto'}
+TIPI_AUDIT_PERSONA = {'utente', 'accesso', 'iscrizione', 'host', 'persona ehs', 'richiesta cancellazione',
+                      'formazione ehs svolta'}
+EMAIL = re.compile(r'[\w.+-]+@[\w-]+(\.[\w-]+)+')
+
+
+def anonimizza(dato, host=False):
+    if isinstance(dato, list):
+        return [anonimizza(v, host) for v in dato]
+    if isinstance(dato, str):
+        return EMAIL.sub('•••', dato)
+    if not isinstance(dato, dict):
+        return dato
+    out = {}
+    for k, v in dato.items():
+        if v in (None, ''):
+            out[k] = v
+        elif k in CAMPI_NOME_COMPLETO:
+            out[k] = NOME_COMPLETO_FINTO
+        elif k in CAMPI_SVUOTATI or 'email' in k:
+            out[k] = None if k == 'foto' else ''
+        elif k in ('cognome', 'user_cognome', 'utente_cognome'):
+            out[k] = COGNOME_FINTO
+        elif k in ('user_nome',) or (k == 'nome' and 'cognome' in dato):
+            out[k] = NOME_FINTO
+        elif k == 'descrizione' and host and 'posizione' in dato:
+            out[k] = NOME_COMPLETO_FINTO
+        elif k == 'target_repr' and str(dato.get('target_tipo', '')).lower() in TIPI_AUDIT_PERSONA:
+            out[k] = NOME_COMPLETO_FINTO
+        else:
+            out[k] = anonimizza(v, host)
+    return out

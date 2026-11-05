@@ -343,6 +343,10 @@ class DevelopmentSearchView(APIView):
         ruolo_id = request.query_params.get('ruolo', '').strip()
         store_id = request.query_params.get('store', '').strip()
 
+        if request.user.sola_lettura:
+            # Dati anonimizzati: i filtri non servono, si mostra solo il percorso di esempio.
+            qs = qs.filter(cognome__iexact=COGNOME_DEVELOPMENT_GUEST)
+            return Response(UserListSerializer(qs[:50], many=True).data)
         if not (nome or ruolo_id or store_id):
             return Response([])
 
@@ -352,8 +356,6 @@ class DevelopmentSearchView(APIView):
             qs = qs.filter(ruolo_id=ruolo_id)
         if store_id:
             qs = qs.filter(store_id=store_id)
-        if request.user.sola_lettura:
-            qs = qs.filter(cognome__iexact=COGNOME_DEVELOPMENT_GUEST)
 
         serializer = UserListSerializer(qs[:50], many=True)
         return Response(serializer.data)
