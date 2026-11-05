@@ -58,3 +58,35 @@ class StatsOrePersonaTest(TestCase):
         _, totale = _compute_stats({})
         self.assertEqual(totale['ore_erogate'], 12.0)  # 4 ore x 3 persone, disattivati compresi
         self.assertEqual((totale['maschi'], totale['femmine'], totale['ns']), (1, 2, 0))
+
+
+class SolaLetturaTest(TestCase):
+    """Il profilo guest (creato dalla migrazione) vede tutto come Admin ma non modifica né esporta."""
+
+    def setUp(self):
+        self.c = APIClient()
+        r = self.c.post('/api/auth/login/', {'email': 'guest@primark.it', 'password': 'Primark01!'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.data['user']['sola_lettura'])
+        self.c.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+
+    def test_legge_come_admin(self):
+        self.assertEqual(self.c.get('/api/users/').status_code, 200)
+        self.assertEqual(self.c.get('/api/users/audit/').status_code, 200)
+
+    def test_non_scrive(self):
+        conteggio = AttivitaCatalogo.objects.count()
+        r = self.c.post('/api/attivita/', {'nome': 'Nuova', 'tipologia': 'ld'}, format='json')
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(AttivitaCatalogo.objects.count(), conteggio)
+        guest = User.objects.get(email='guest@primark.it')
+        self.assertEqual(self.c.patch(f'/api/users/{guest.id}/', {'nome': 'X'}, format='json').status_code, 403)
+        self.assertEqual(self.c.delete(f'/api/users/{guest.id}/').status_code, 403)
+
+    def test_non_esporta(self):
+        self.assertEqual(self.c.get('/api/report/excel/').status_code, 403)
+        self.assertEqual(self.c.get('/api/stats/export/').status_code, 403)
+
+    def test_password_non_visibili(self):
+        guest = User.objects.get(email='guest@primark.it')
+        self.assertIsNone(self.c.get(f'/api/users/{guest.id}/').data.get('raw_password'))

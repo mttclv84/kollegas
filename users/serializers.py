@@ -25,6 +25,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'store_id': self.user.store_id,
             'store_nome': str(self.user.store) if self.user.store else None,
             'foto': self.user.foto.url if self.user.foto else None,
+            'sola_lettura': self.user.sola_lettura,
         }
         AuditLog.objects.create(actor=self.user, azione='accesso', target_tipo='Accesso',
                                 target_id=self.user.id, target_repr=self.user.nome_completo)
@@ -70,7 +71,7 @@ class UserDetailSerializer(serializers.ModelSerializer):
 
     def get_raw_password(self, obj):
         request = self.context.get('request')
-        if request and request.user.livello_accesso in ('admin', 'ho'):
+        if request and request.user.livello_accesso in ('admin', 'ho') and not request.user.sola_lettura:
             return obj.raw_password or None
         return None
 

@@ -93,3 +93,32 @@ class AuditMiddleware:
             target_repr=(nome or (f'#{target_id}' if target_id else ''))[:300],
             dettaglio=' · '.join(dettaglio),
         )
+
+
+class SolaLetturaMiddleware:
+    """Profili in sola lettura (es. guest): rifiuta ogni richiesta che modifica dati
+    e i download di export. Sono consentiti solo login/logout e la lettura delle notifiche."""
+
+    CONSENTITI = re.compile(r'^/api/auth/|notifiche')
+    EXPORT = re.compile(r'/report/excel/|/stats/export/')
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        path = request.path
+        scrittura = request.method not in ('GET', 'HEAD', 'OPTIONS')
+        if (path.startswith('/api/') and not self.CONSENTITI.search(path)
+                and (scrittura or self.EXPORT.search(path)) and self._sola_lettura(request)):
+            from django.http import JsonResponse
+            return JsonResponse({'detail': 'Profilo in sola lettura: operazione non consentita.'}, status=403)
+        return self.get_response(request)
+
+    @staticmethod
+    def _sola_lettura(request):
+        from rest_framework_simplejwt.authentication import JWTAuthentication
+        try:
+            esito = JWTAuthentication().authenticate(request)
+        except Exception:
+            return False
+        return bool(esito and esito[0].sola_lettura)

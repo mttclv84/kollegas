@@ -75,6 +75,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     commento_mapping = models.TextField(blank=True)
     long_absence = models.BooleanField(default=False)
     raw_password = models.CharField(max_length=128, blank=True, default='')
+    # Profilo osservatore: vede ciò che vede il suo livello ma non può modificare né esportare nulla.
+    sola_lettura = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
