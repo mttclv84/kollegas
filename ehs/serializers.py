@@ -8,7 +8,7 @@ from .models import (
     EHSCorso, EHSFormazione, EHSMansione, EHSObbligo, EHSOffertaCorso, EHSPartecipante, EHSSessione,
     EHSSessioneDocumento, EHSSessioneLog,
 )
-from .services import cancellazione_consentita, minimo_partecipanti
+from .services import cancellazione_consentita, minimo_partecipanti, scadenza_caricamento_documenti
 
 User = get_user_model()
 
@@ -138,7 +138,7 @@ class EHSPartecipanteSerializer(serializers.ModelSerializer):
 class EHSSessioneDocumentoSerializer(serializers.ModelSerializer):
     class Meta:
         model = EHSSessioneDocumento
-        fields = ['id', 'nome_originale', 'caricato_il']
+        fields = ['id', 'tipo', 'nome_originale', 'caricato_il']
 
 
 class EHSSessioneLogSerializer(serializers.ModelSerializer):
@@ -166,10 +166,26 @@ class EHSSessioneListSerializer(serializers.ModelSerializer):
             'docente_nome', 'contatto_negozio_nome', 'partecipanti_previsti', 'partecipanti_count',
             'modalita', 'eccezionale', 'fornitore_secondario', 'fornitore_richiesto', 'fornitore_richiesto_nome',
             'partecipanti_min', 'partecipanti_max', 'minimo_effettivo', 'sotto_minimo',
-            'attestati_caricati_il', 'creata_il',
+            'attestati_caricati_il', 'presenze_caricate_il', 'data_chiusura',
+            'scadenza_caricamento', 'documenti_conteggio', 'creata_dal_fornitore', 'creata_il',
         ]
 
     minimo_effettivo = serializers.SerializerMethodField()
+    scadenza_caricamento = serializers.SerializerMethodField()
+    documenti_conteggio = serializers.SerializerMethodField()
+    creata_dal_fornitore = serializers.SerializerMethodField()
+
+    def get_scadenza_caricamento(self, obj):
+        return scadenza_caricamento_documenti(obj)
+
+    def get_documenti_conteggio(self, obj):
+        conteggio = {'presenze': 0, 'attestati': 0}
+        for d in obj.documenti.all():
+            conteggio[d.tipo] = conteggio.get(d.tipo, 0) + 1
+        return conteggio
+
+    def get_creata_dal_fornitore(self, obj):
+        return obj.creata_da_id is not None and obj.creata_da_id == obj.fornitore_id
     sotto_minimo = serializers.SerializerMethodField()
 
     def get_partecipanti_count(self, obj):
@@ -201,7 +217,7 @@ class EHSSessioneDetailSerializer(EHSSessioneListSerializer):
             'creata_da', 'creata_da_nome',
             'docente_telefono', 'contatto_negozio_telefono',
             'registro_file', 'link_online', 'motivazione_eccezione',
-            'calendario_evento', 'data_chiusura', 'chiusa_da', 'note',
+            'calendario_evento', 'chiusa_da', 'note',
             'partecipanti', 'documenti', 'log', 'cancellazione_consentita',
         ]
 

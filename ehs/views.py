@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import generics
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -36,6 +36,7 @@ from .models import (
     EHSObbligo,
     EHSPartecipante,
     EHSSessione,
+    EHSSessioneDocumento,
 )
 from .serializers import (
     EHSCalendarioEventoSerializer,
@@ -174,7 +175,7 @@ class EHSSessioneListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset_per_ruolo(self, user):
-        qs = EHSSessione.objects.select_related('corso', 'negozio', 'fornitore', 'fornitore_richiesto', 'creata_da')
+        qs = EHSSessione.objects.select_related('corso', 'negozio', 'fornitore', 'fornitore_richiesto', 'creata_da').prefetch_related('documenti')
         if user.livello_accesso == 'store':
             qs = qs.filter(negozio=user.store)
         elif user.livello_accesso == 'fornitore':
@@ -336,14 +337,13 @@ class EHSAccettaContropropostaView(BaseEHSSessioneActionView):
 
 
 class EHSChiudiAulaView(BaseEHSSessioneActionView):
-    """Ultimo passaggio del wizard 'Aula completata': un solo submit multipart con
-    le presenze per partecipante ('presente_<id>' bool, 'motivo_<id>' opzionale per
-    gli assenti) e uno o più documenti di chiusura ('files', ripetuto)."""
-    parser_classes = [MultiPartParser, FormParser]
+    """'Aula completata': il fornitore indica solo presenti e assenti
+    ('presente_<id>' bool, 'motivo_<id>' opzionale per gli assenti). I documenti si
+    caricano dopo, dal menù Richieste (sezioni Presenze e Attestati)."""
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request, pk):
         sessione = self.get_sessione_visibile(request, pk)
-        files = request.FILES.getlist('files') or request.FILES.getlist('file')
         presenze, assenze_motivo = {}, {}
         for p in sessione.partecipanti.all():
             presenze[p.id] = str(request.data.get(f'presente_{p.id}', '')).lower() in ('true', '1', 'on')
@@ -351,7 +351,7 @@ class EHSChiudiAulaView(BaseEHSSessioneActionView):
             if motivo:
                 assenze_motivo[p.id] = motivo
         try:
-            sessione = services.chiudi_aula(sessione, presenze, files, request.user, assenze_motivo)
+            sessione = services.chiudi_aula(sessione, presenze, None, request.user, assenze_motivo)
         except TransizioneNonValida as e:
             return Response({'detail': str(e)}, status=403)
         return self.risposta(request, sessione)
@@ -434,6 +434,70 @@ class EHSAttestatiCaricatiView(BaseEHSSessioneActionView):
     """Il fornitore conferma di aver caricato gli attestati su SharePoint."""
     def patch(self, request, pk):
         return self.esegui(request, pk, lambda s: services.segna_attestati_caricati(s, request.user))
+
+
+class EHSDocumentiView(BaseEHSSessioneActionView):
+    """POST /ehs/sessioni/<pk>/documenti/ — il fornitore carica file ('files', ripetuto)
+    nella sezione 'tipo' (presenze | attestati), entro 45 giorni dalla chiusura.
+    DELETE /ehs/sessioni/<pk>/documenti/<documento_id>/ — rimuove un file caricato per
+    errore, finché la sezione non è segnata come completa."""
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, pk):
+        tipo = request.data.get('tipo')
+        files = request.FILES.getlist('files') or request.FILES.getlist('file')
+        return self.esegui(request, pk, lambda s: services.carica_documenti(s, request.user, tipo, files))
+
+    def delete(self, request, pk, documento_id):
+        sessione = self.get_sessione_visibile(request, pk)
+        documento = get_object_or_404(EHSSessioneDocumento, pk=documento_id, sessione=sessione)
+        try:
+            services.elimina_documento(sessione, request.user, documento)
+        except TransizioneNonValida as e:
+            return Response({'detail': str(e)}, status=403)
+        sessione.refresh_from_db()
+        return self.risposta(request, sessione)
+
+
+class EHSSezioneCompletaView(BaseEHSSessioneActionView):
+    """PATCH /ehs/sessioni/<pk>/sezione-completa/ {tipo} — il fornitore ha terminato
+    il caricamento della sezione Presenze o Attestati (la "V" diventa verde)."""
+    def patch(self, request, pk):
+        tipo = request.data.get('tipo')
+        return self.esegui(request, pk, lambda s: services.segna_sezione_completa(s, request.user, tipo))
+
+
+class EHSAulaFornitoreView(APIView):
+    """GET /ehs/aula-fornitore/ — corsi erogati dal fornitore con i negozi serviti.
+    POST — il fornitore crea in autonomia un'aula, subito confermata sul calendario
+    (nessuna conferma del negozio)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.livello_accesso != 'fornitore':
+            return Response({'detail': 'Solo i fornitori EHS possono creare un\'aula.'}, status=403)
+        return Response(services.opzioni_aula_fornitore(request.user))
+
+    def post(self, request):
+        user = request.user
+        if user.livello_accesso != 'fornitore':
+            return Response({'detail': 'Solo i fornitori EHS possono creare un\'aula.'}, status=403)
+        d = request.data
+        if not d.get('corso') or not d.get('negozio'):
+            return Response({'detail': 'Corso e negozio sono obbligatori.'}, status=400)
+        corso = get_object_or_404(EHSCorso, pk=d.get('corso'))
+        negozio = get_object_or_404(Store, pk=d.get('negozio'))
+        try:
+            sessione = services.crea_aula_fornitore(
+                user, corso, negozio, _parse_data(d.get('data')),
+                d.get('docente_nome'), d.get('docente_telefono'),
+                d.get('partecipanti_min'), d.get('partecipanti_max'),
+                modalita=d.get('modalita') or 'PRESENZA', link_online=d.get('link_online') or '',
+                note=d.get('note') or '',
+            )
+        except TransizioneNonValida as e:
+            return Response({'detail': str(e)}, status=400)
+        return Response(EHSSessioneDetailSerializer(sessione, context={'request': request}).data, status=201)
 
 
 class EHSCalendarioView(APIView):
@@ -585,6 +649,8 @@ class EHSNotificaScadenzaView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Popup disattivati (anche quelli già generati e non letti).
+        return Response([])
         user = request.user
         if user.livello_accesso != 'store' or not user.store_id:
             return Response([])
@@ -621,6 +687,8 @@ class EHSNotificaSessioneConfermataView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Popup disattivati (anche quelli già generati e non letti).
+        return Response([])
         user = request.user
         if user.livello_accesso != 'fornitore':
             return Response([])
@@ -653,6 +721,8 @@ class EHSNotificaSessioneConfermataStoreView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Popup disattivati (anche quelli già generati e non letti).
+        return Response([])
         user = request.user
         if user.livello_accesso != 'store' or not user.store_id:
             return Response([])
@@ -684,6 +754,8 @@ class EHSNotificaDataPropostaView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Popup disattivati (anche quelli già generati e non letti).
+        return Response([])
         user = request.user
         if user.livello_accesso != 'store' or not user.store_id:
             return Response([])
@@ -786,7 +858,9 @@ class EHSRegistriView(APIView):
                     {'utente_nome': p.utente.nome_completo, 'presente': p.presente}
                     for p in s.partecipanti.all()
                 ],
-                'documenti': [{'id': d.id, 'nome_originale': d.nome_originale} for d in s.documenti.all()],
+                'documenti': [{'id': d.id, 'nome_originale': d.nome_originale, 'tipo': d.tipo}
+                              for d in s.documenti.all()],
+                'presenze_caricate_il': s.presenze_caricate_il,
                 'attestati_caricati_il': s.attestati_caricati_il,
             }
             for s in qs.order_by('-data_confermata')
@@ -1070,6 +1144,8 @@ class EHSAvvisoView(APIView):
         return EHSAvviso.objects.filter(filtro, letta=False).select_related('sessione__corso', 'sessione__negozio')
 
     def get(self, request):
+        # Popup disattivati (anche quelli già generati e non letti).
+        return Response([])
         return Response([
             {'id': a.id, 'tipo': a.tipo, 'testo': a.testo, 'sessione_id': a.sessione_id,
              'corso_nome': a.sessione.corso.nome, 'negozio_nome': a.sessione.negozio.nome, 'creata_il': a.creata_il}

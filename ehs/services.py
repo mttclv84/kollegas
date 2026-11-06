@@ -29,6 +29,10 @@ PARTECIPANTI_MINIMI = 3
 GIORNI_AVVISO_MINIMO = 4
 # Chi ha una formazione ancora valida può rifarla solo negli ultimi N giorni prima della scadenza.
 GIORNI_RINNOVO_ANTICIPATO = 120
+# Dopo la chiusura dell'aula il fornitore ha questo numero di giorni per caricare i
+# documenti delle sezioni Presenze e Attestati.
+GIORNI_CARICAMENTO_DOCUMENTI = 45
+SEZIONI_DOCUMENTI = ('presenze', 'attestati')
 
 
 class TransizioneNonValida(Exception):
@@ -443,8 +447,7 @@ def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telef
 
 
 def _notifica_data_proposta(sessione):
-    from .models import EHSNotificaDataProposta
-    EHSNotificaDataProposta.objects.create(sessione=sessione, negozio_destinatario=sessione.negozio)
+    # Nessun popup in app (automatismi popup disattivati): resta solo l'email.
     _invia_email(_email_store(sessione), f'Data proposta: {_descrizione(sessione)}',
                  f'Il fornitore ha proposto il {_fmt(sessione.data_proposta)} '
                  f'(docente: {sessione.docente_nome}).\n\nAccedi all\'app per accettare o proporre un\'altra data.')
@@ -494,21 +497,15 @@ def _crea_evento_calendario(sessione):
 
 def _conferma_sessione(sessione, utente, nota, notifica_lato='fornitore'):
     """Transizione condivisa verso CONFERMATA: fissa data_confermata, sincronizza il
-    calendario e notifica chi non ha compiuto l'azione (popup sulla sua home) — usata
-    sia quando lo store accetta la proposta (notifica al fornitore), sia quando il
-    fornitore accetta una contro-proposta (notifica allo store)."""
-    from .models import EHSNotificaSessioneConfermata, EHSNotificaSessioneConfermataStore
-
+    calendario e avvisa via email store e fornitore — usata sia quando lo store accetta
+    la proposta, sia quando il fornitore accetta una contro-proposta. I popup in app
+    sono disattivati; `notifica_lato` resta per compatibilità con i chiamanti."""
     stato_precedente = sessione.stato
     sessione.data_confermata = sessione.data_proposta
     sessione.stato = 'CONFERMATA'
     sessione.save()
     _crea_evento_calendario(sessione)
     _log(sessione, stato_precedente, sessione.stato, utente, nota)
-    if notifica_lato == 'store':
-        EHSNotificaSessioneConfermataStore.objects.create(sessione=sessione, negozio_destinatario=sessione.negozio)
-    elif sessione.fornitore:
-        EHSNotificaSessioneConfermata.objects.create(sessione=sessione, fornitore=sessione.fornitore)
 
     corpo = f'Formazione confermata per il {_fmt(sessione.data_confermata)}.\nDocente: {sessione.docente_nome or "—"}'
     corpo_store = corpo
@@ -684,12 +681,12 @@ def annulla_sessione(sessione, utente):
 
 # --- Chiusura aula e attestati -------------------------------------------------
 
-def invia_email_registro(sessione):
-    """Invio di sistema dei documenti di chiusura al momento della chiusura aula:
-    non è un'azione manuale del fornitore, lui carica solo in app."""
+def invia_email_documenti(sessione, tipo):
+    """Invio di sistema dei documenti di una sezione (Presenze o Attestati) quando il
+    fornitore la segna come completa: non è un'azione manuale, lui carica solo in app."""
     destinatario = getattr(settings, 'EHS_EMAIL_ATTESTATI', 'vspampinato@primark.it')
     allegati = []
-    for doc in sessione.documenti.all():
+    for doc in sessione.documenti.filter(tipo=tipo):
         try:
             doc.file.open('rb')
             try:
@@ -698,28 +695,25 @@ def invia_email_registro(sessione):
                 doc.file.close()
         except Exception:
             logger.exception('Lettura documento %s fallita per sessione %s', doc.id, sessione.id)
+    etichetta = 'Presenze' if tipo == 'presenze' else 'Attestati'
     _invia_email(
-        [destinatario], f'Registro — {_descrizione(sessione)}',
-        f'Documenti di chiusura del corso {sessione.corso.nome} presso {sessione.negozio}, '
+        [destinatario], f'{etichetta} — {_descrizione(sessione)}',
+        f'{etichetta} del corso {sessione.corso.nome} presso {sessione.negozio}, '
         f'sessione del {_fmt(sessione.data_confermata)}.',
         allegati=allegati,
     )
 
 
-def chiudi_aula(sessione, presenze, files, utente_fornitore, assenze_motivo=None):
-    """Azione unica del fornitore a fine sessione: conferma presenze, carica i
-    documenti di chiusura (registro compilato ed eventuali altri file, consultabili poi
-    dal negozio nella sezione Registri), invia email di sistema, chiude formalmente
-    e calcola le scadenze. presenze: {partecipante_id: bool}."""
-    from .models import EHSSessioneDocumento
-
+def chiudi_aula(sessione, presenze, files=None, utente_fornitore=None, assenze_motivo=None):
+    """Azione del fornitore a fine sessione: indica solo presenti e assenti, chiude
+    formalmente l'aula (COMPLETATA) e calcola le scadenze. I documenti (Presenze e
+    Attestati) si caricano dopo, entro GIORNI_CARICAMENTO_DOCUMENTI giorni.
+    presenze: {partecipante_id: bool}. `files` è ignorato (compatibilità)."""
     assenze_motivo = assenze_motivo or {}
-    if utente_fornitore.livello_accesso not in RUOLI_FORNITORE:
+    if utente_fornitore is None or utente_fornitore.livello_accesso not in RUOLI_FORNITORE:
         raise TransizioneNonValida("Solo il Fornitore (o Admin/HO) può chiudere l'aula.")
     if sessione.stato != 'CONFERMATA':
         raise TransizioneNonValida(f"Non è possibile chiudere l'aula dallo stato {sessione.stato}.")
-    if not files:
-        raise TransizioneNonValida('Carica almeno un documento (il registro compilato) per chiudere l\'aula.')
 
     from participants.models import Iscrizione
 
@@ -730,15 +724,11 @@ def chiudi_aula(sessione, presenze, files, utente_fornitore, assenze_motivo=None
         sessione.stato = 'COMPLETATA'
         sessione.save()
 
-        for f in files:
-            EHSSessioneDocumento.objects.create(
-                sessione=sessione, file=f, nome_originale=getattr(f, 'name', '')[:255],
-                caricato_da=utente_fornitore,
-            )
-
+        presenti = 0
         for partecipante in sessione.partecipanti.all():
             partecipante.presente = bool(presenze.get(partecipante.id, False))
             if partecipante.presente:
+                presenti += 1
                 partecipante.completato = True
                 partecipante.completato_il = now
                 partecipante.assente_motivo = ''
@@ -758,31 +748,175 @@ def chiudi_aula(sessione, presenze, files, utente_fornitore, assenze_motivo=None
                     evento_id=sessione.calendario_evento_id, user=partecipante.utente
                 ).update(stato='partecipato' if partecipante.presente else 'assente')
 
-        invia_email_registro(sessione)
-
         _log(sessione, 'CONFERMATA', 'COMPLETATA', utente_fornitore,
-             f'Chiusura aula: presenze confermate, {len(files)} documento/i caricato/i e inviato/i')
+             f'Chiusura aula: {presenti} presenti su {sessione.partecipanti.count()}')
+    return sessione
+
+
+def scadenza_caricamento_documenti(sessione):
+    """Ultimo giorno utile per caricare i documenti (data di chiusura + 45 giorni)."""
+    if not sessione.data_chiusura:
+        return None
+    return timezone.localtime(sessione.data_chiusura).date() + timedelta(days=GIORNI_CARICAMENTO_DOCUMENTI)
+
+
+def sezione_completa(sessione, tipo):
+    return bool(sessione.presenze_caricate_il if tipo == 'presenze' else sessione.attestati_caricati_il)
+
+
+def _verifica_caricamento(sessione, utente, tipo):
+    if utente.livello_accesso not in RUOLI_FORNITORE:
+        raise TransizioneNonValida('Solo il Fornitore (o Admin/HO) può caricare i documenti.')
+    if utente.livello_accesso == 'fornitore' and sessione.fornitore_id != utente.id:
+        raise TransizioneNonValida('Puoi caricare documenti solo sulle tue aule.')
+    if tipo not in SEZIONI_DOCUMENTI:
+        raise TransizioneNonValida('Sezione documenti non valida.')
+    if sessione.stato != 'COMPLETATA':
+        raise TransizioneNonValida("I documenti si caricano dopo la chiusura dell'aula.")
+    if sezione_completa(sessione, tipo):
+        raise TransizioneNonValida('Sezione già segnata come completa.')
+    scadenza = scadenza_caricamento_documenti(sessione)
+    # L'Admin può intervenire anche oltre il termine.
+    if utente.livello_accesso == 'fornitore' and scadenza and timezone.localdate() > scadenza:
+        raise TransizioneNonValida(
+            f"Termine per il caricamento scaduto ({GIORNI_CARICAMENTO_DOCUMENTI} giorni dalla chiusura "
+            f"dell'aula, il {scadenza.strftime('%d/%m/%Y')}). Contatta l'EHS Admin."
+        )
+
+
+def carica_documenti(sessione, utente, tipo, files):
+    """Il fornitore carica uno o più documenti nella sezione Presenze o Attestati."""
+    from .models import EHSSessioneDocumento
+
+    _verifica_caricamento(sessione, utente, tipo)
+    if not files:
+        raise TransizioneNonValida('Seleziona almeno un file.')
+    with transaction.atomic():
+        for f in files:
+            EHSSessioneDocumento.objects.create(
+                sessione=sessione, tipo=tipo, file=f, nome_originale=getattr(f, 'name', '')[:255],
+                caricato_da=utente,
+            )
+        _log(sessione, sessione.stato, sessione.stato, utente,
+             f'{len(files)} documento/i caricato/i in {tipo.capitalize()}')
+    return sessione
+
+
+def elimina_documento(sessione, utente, documento):
+    """Rimuove un documento caricato per errore, finché la sezione non è completa."""
+    _verifica_caricamento(sessione, utente, documento.tipo)
+    with transaction.atomic():
+        nome, tipo = documento.nome_originale, documento.tipo
+        documento.file.delete(save=False)
+        documento.delete()
+        _log(sessione, sessione.stato, sessione.stato, utente, f'Documento rimosso da {tipo.capitalize()}: {nome}')
+    return sessione
+
+
+def segna_sezione_completa(sessione, utente, tipo):
+    """Il fornitore ha finito di caricare i documenti di una sezione: la "V" diventa
+    verde e i documenti vengono inviati via email all'EHS. Per gli Attestati non serve
+    un file se nessun partecipante era presente."""
+    _verifica_caricamento(sessione, utente, tipo)
+    if not sessione.documenti.filter(tipo=tipo).exists():
+        nessun_presente = not sessione.partecipanti.filter(presente=True).exists()
+        if not (tipo == 'attestati' and nessun_presente):
+            raise TransizioneNonValida('Carica almeno un documento prima di segnare la sezione come completa.')
+    with transaction.atomic():
+        now = timezone.now()
+        if tipo == 'presenze':
+            sessione.presenze_caricate_il, sessione.presenze_caricate_da = now, utente
+            campi = ['presenze_caricate_il', 'presenze_caricate_da', 'aggiornata_il']
+        else:
+            sessione.attestati_caricati_il, sessione.attestati_caricati_da = now, utente
+            campi = ['attestati_caricati_il', 'attestati_caricati_da', 'aggiornata_il']
+        sessione.save(update_fields=campi)
+        _log(sessione, sessione.stato, sessione.stato, utente, f'{tipo.capitalize()}: caricamento completato')
+        invia_email_documenti(sessione, tipo)
     return sessione
 
 
 def segna_attestati_caricati(sessione, utente):
-    """Il fornitore conferma di aver caricato gli attestati nella cartella SharePoint
-    aziendale (anche giorni dopo la chiusura aula)."""
-    if utente.livello_accesso not in RUOLI_FORNITORE:
-        raise TransizioneNonValida('Solo il Fornitore (o Admin/HO) può confermare il caricamento degli attestati.')
-    if sessione.stato != 'COMPLETATA':
-        raise TransizioneNonValida('Gli attestati si caricano dopo la chiusura dell\'aula.')
+    """Compatibilità con il vecchio endpoint: equivale a completare la sezione Attestati."""
+    return segna_sezione_completa(sessione, utente, 'attestati')
+
+
+# --- Aula creata direttamente dal fornitore ---------------------------------------
+
+def crea_aula_fornitore(fornitore, corso, negozio, data, docente_nome, docente_telefono,
+                        partecipanti_min, partecipanti_max, modalita='PRESENZA', link_online='', note=''):
+    """Il fornitore crea in autonomia un'aula sul calendario EHS per un corso che eroga
+    al negozio: nessun passaggio di richiesta/proposta, l'aula è subito CONFERMATA e
+    visibile sul calendario, senza attendere la conferma del negozio. Da qui in poi
+    vale la gestione normale (iscrizioni, minimo partecipanti, cancellazioni, chiusura)."""
+    from .models import EHSSessione
+
+    if fornitore.livello_accesso != 'fornitore':
+        raise TransizioneNonValida("Solo un Fornitore EHS può creare un'aula in autonomia.")
+    if not corso.attivo:
+        raise TransizioneNonValida('Corso non attivo.')
+    if not fornitori_idonei(corso, negozio).filter(pk=fornitore.pk).exists():
+        raise TransizioneNonValida('Non eroghi questo corso per il negozio selezionato.')
+    if not data:
+        raise TransizioneNonValida('Data e ora sono obbligatorie.')
+    _valida_mezzora(data, 'Data')
+    if data <= timezone.now():
+        raise TransizioneNonValida("La data dell'aula deve essere futura.")
+    docente_nome, docente_telefono = (docente_nome or '').strip(), (docente_telefono or '').strip()
+    if not docente_nome or not docente_telefono:
+        raise TransizioneNonValida('Nome e telefono del docente sono obbligatori.')
+    minimo, massimo = _valida_min_max(partecipanti_min, partecipanti_max)
+    if modalita not in ('PRESENZA', 'ONLINE'):
+        raise TransizioneNonValida('Indica se la formazione sarà in presenza o online.')
+    link_online = (link_online or '').strip()
+    if modalita == 'ONLINE' and not link_online:
+        raise TransizioneNonValida('Per una formazione online il link alla call è obbligatorio.')
 
     with transaction.atomic():
-        sessione.attestati_caricati_il = timezone.now()
-        sessione.attestati_caricati_da = utente
-        sessione.save(update_fields=['attestati_caricati_il', 'attestati_caricati_da', 'aggiornata_il'])
-        _log(sessione, sessione.stato, sessione.stato, utente, 'Attestati caricati su SharePoint')
-        destinatario = getattr(settings, 'EHS_EMAIL_ATTESTATI', 'vspampinato@primark.it')
-        _invia_email([destinatario], f'Attestati caricati: {_descrizione(sessione)}',
-                     f'Il fornitore {utente.nome_completo} ha caricato gli attestati della sessione del '
-                     f'{_fmt(sessione.data_confermata)} nella cartella SharePoint.')
+        sessione = EHSSessione.objects.create(
+            corso=corso, negozio=negozio, creata_da=fornitore, fornitore=fornitore,
+            stato='CONFERMATA', modalita=modalita, link_online=link_online if modalita == 'ONLINE' else '',
+            durata_ore=corso.durata_ore,
+            data_proposta=data, data_confermata=data,
+            docente_nome=docente_nome, docente_telefono=docente_telefono,
+            contatto_negozio_nome='', contatto_negozio_telefono='',
+            partecipanti_min=minimo, partecipanti_max=massimo, note=note or '',
+        )
+        _crea_evento_calendario(sessione)
+        _log(sessione, '', 'CONFERMATA', fornitore,
+             f'Aula creata dal fornitore e confermata sul calendario — docente: {docente_nome} — '
+             f'partecipanti min {minimo}, max {massimo}')
+        corpo = (f"Il fornitore {_nome_fornitore(fornitore)} ha programmato un'aula per il tuo negozio.\n\n"
+                 f'Corso: {corso.nome}\nData: {_fmt(data)}\nDocente: {docente_nome}\n'
+                 f'Partecipanti: min {minimo}, max {massimo}\n\n'
+                 f"L'aula è già confermata sul calendario EHS: iscrivi i partecipanti dall'app.")
+        if modalita == 'ONLINE':
+            corpo += f'\n\nFormazione ONLINE — link alla call:\n{link_online}'
+        _invia_email(_email_store(sessione), f'Nuova aula programmata: {_descrizione(sessione)}', corpo)
     return sessione
+
+
+def opzioni_aula_fornitore(fornitore):
+    """Corsi che il fornitore eroga, ciascuno con i negozi per cui può creare un'aula."""
+    from stores.models import Store
+    from .models import EHSOffertaCorso
+
+    negozi_tutti = None
+    risultato = []
+    offerte = (EHSOffertaCorso.objects.filter(fornitore=fornitore, corso__attivo=True)
+               .select_related('corso').prefetch_related('negozi').order_by('corso__nome'))
+    for o in offerte:
+        if o.tutti_negozi:
+            if negozi_tutti is None:
+                negozi_tutti = list(Store.objects.filter(is_active=True).order_by('nome'))
+            negozi = negozi_tutti
+        else:
+            negozi = sorted((n for n in o.negozi.all() if n.is_active), key=lambda n: n.nome)
+        risultato.append({
+            'corso_id': o.corso_id, 'corso_nome': o.corso.nome, 'durata_ore': o.corso.durata_ore,
+            'negozi': [{'id': n.id, 'nome': n.nome, 'codice': n.codice_store} for n in negozi],
+        })
+    return risultato
 
 
 # --- Scadenze ------------------------------------------------------------------
@@ -877,26 +1011,19 @@ def esegui_automatismi_giornalieri():
              .update(ultimo_controllo_giornaliero=oggi))
     if not vinto:
         return None
-    creati = genera_notifiche_scadenza()
+    # I popup di scadenza sono disattivati: le scadenze restano visibili nel pannello
+    # Scadenze e nel Completamento (genera_notifiche_scadenza non viene più chiamata).
     avvisate, annullate = controlla_minimo_partecipanti()
-    logger.info('Automatismi EHS giornalieri: %s notifiche di scadenza, %s aule sotto il minimo avvisate, '
-                '%s annullate', creati, avvisate, annullate)
-    return creati
+    logger.info('Automatismi EHS giornalieri: %s aule sotto il minimo avvisate, %s annullate',
+                avvisate, annullate)
+    return avvisate
 
 
 # --- Minimo partecipanti -------------------------------------------------------
 
 def _avvisa(sessione, tipo, testo, oggetto):
-    """Avviso in app + email a negozio richiedente, fornitore ed EHS Admin."""
-    from django.contrib.auth import get_user_model
-    from .models import EHSAvviso
-
-    EHSAvviso.objects.create(sessione=sessione, tipo=tipo, testo=testo, negozio=sessione.negozio)
-    destinatari = list(get_user_model().objects.filter(livello_accesso='admin_ehs', is_active=True))
-    if sessione.fornitore_id:
-        destinatari.append(sessione.fornitore)
-    for u in destinatari:
-        EHSAvviso.objects.create(sessione=sessione, tipo=tipo, testo=testo, utente=u)
+    """Email a negozio richiedente, fornitore ed EHS Admin (i popup in app sono
+    disattivati: `tipo` resta per compatibilità)."""
     _invia_email(_email_store(sessione) + _email_fornitore(sessione) + _email_admin_ehs(),
                  f'{oggetto}: {_descrizione(sessione)}', testo)
 

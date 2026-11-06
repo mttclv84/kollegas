@@ -191,29 +191,101 @@ class EHSFlussiTest(TestCase):
         r = self._client(self.store_user).delete(f'/api/iscrizioni/{isc.id}/')
         self.assertEqual(r.status_code, 204)
 
-    # --- chiusura aula, documenti multipli, attestati ---
+    # --- chiusura aula (solo presenze), documenti Presenze/Attestati entro 45 giorni ---
 
-    def test_chiusura_con_piu_file_e_attestati(self):
+    def test_chiusura_solo_presenze_poi_documenti_per_sezione(self):
         sessione = self._conferma(self._crea(), giorni=10)
         Iscrizione.objects.create(evento=sessione.calendario_evento, user=self.collaboratore, stato='iscritto')
         p = EHSPartecipante.objects.get(sessione=sessione)
         c = self._client(self.f_rete)
-        r = c.post(f'/api/ehs/sessioni/{sessione.id}/chiudi-aula/', {
-            f'presente_{p.id}': 'true',
+        r = c.post(f'/api/ehs/sessioni/{sessione.id}/chiudi-aula/', {f'presente_{p.id}': 'true'}, format='multipart')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['stato'], 'COMPLETATA')
+        self.assertEqual(r.json()['documenti'], [])
+        self.assertIsNotNone(r.json()['scadenza_caricamento'])
+
+        # La V non diventa verde senza documenti
+        r = c.patch(f'/api/ehs/sessioni/{sessione.id}/sezione-completa/', {'tipo': 'presenze'}, format='json')
+        self.assertEqual(r.status_code, 403)
+
+        r = c.post(f'/api/ehs/sessioni/{sessione.id}/documenti/', {
+            'tipo': 'presenze',
             'files': [SimpleUploadedFile('registro.pdf', b'%PDF-1', content_type='application/pdf'),
                       SimpleUploadedFile('foto.jpg', b'jpg', content_type='image/jpeg')],
         }, format='multipart')
         self.assertEqual(r.status_code, 200, r.content)
-        self.assertEqual(len(r.json()['documenti']), 2)
-        r = self._client(self.store_user).get('/api/ehs/registri/')
-        self.assertEqual(len(r.json()[0]['documenti']), 2)
-        r = c.patch(f'/api/ehs/sessioni/{sessione.id}/attestati-caricati/')
+        self.assertEqual(r.json()['documenti_conteggio'], {'presenze': 2, 'attestati': 0})
+        # rimozione di un file caricato per errore
+        doc_id = r.json()['documenti'][1]['id']
+        r = c.delete(f'/api/ehs/sessioni/{sessione.id}/documenti/{doc_id}/')
+        self.assertEqual(r.json()['documenti_conteggio']['presenze'], 1)
+
+        r = c.patch(f'/api/ehs/sessioni/{sessione.id}/sezione-completa/', {'tipo': 'presenze'}, format='json')
         self.assertEqual(r.status_code, 200)
+        self.assertIsNotNone(r.json()['presenze_caricate_il'])
+        self.assertIsNone(r.json()['attestati_caricati_il'])
+        # sezione completa: niente più caricamenti
+        r = c.post(f'/api/ehs/sessioni/{sessione.id}/documenti/', {
+            'tipo': 'presenze', 'files': [SimpleUploadedFile('x.pdf', b'x')]}, format='multipart')
+        self.assertEqual(r.status_code, 403)
+
+        r = c.post(f'/api/ehs/sessioni/{sessione.id}/documenti/', {
+            'tipo': 'attestati', 'files': [SimpleUploadedFile('att.pdf', b'x')]}, format='multipart')
+        self.assertEqual(r.status_code, 200)
+        r = c.patch(f'/api/ehs/sessioni/{sessione.id}/sezione-completa/', {'tipo': 'attestati'}, format='json')
         self.assertIsNotNone(r.json()['attestati_caricati_il'])
+
+        registri = self._client(self.store_user).get('/api/ehs/registri/').json()
+        self.assertEqual(sorted(d['tipo'] for d in registri[0]['documenti']), ['attestati', 'presenze'])
+        # lo store non può caricare
+        r = self._client(self.store_user).post(f'/api/ehs/sessioni/{sessione.id}/documenti/', {
+            'tipo': 'attestati', 'files': [SimpleUploadedFile('y.pdf', b'x')]}, format='multipart')
+        self.assertEqual(r.status_code, 403)
         for d in sessione.documenti.all():
             d.file.delete(save=False)
 
-    # --- calendario fornitore ---
+    def test_caricamento_documenti_entro_45_giorni(self):
+        sessione = self._conferma(self._crea(), giorni=10)
+        services.chiudi_aula(sessione, {}, None, self.f_rete)
+        EHSSessione.objects.filter(pk=sessione.pk).update(data_chiusura=timezone.now() - timedelta(days=46))
+        sessione.refresh_from_db()
+        with self.assertRaises(TransizioneNonValida):
+            services.carica_documenti(sessione, self.f_rete, 'presenze', [SimpleUploadedFile('r.pdf', b'x')])
+        # entro i 45 giorni sì; attestati completabili senza file se nessuno era presente
+        EHSSessione.objects.filter(pk=sessione.pk).update(data_chiusura=timezone.now() - timedelta(days=44))
+        sessione.refresh_from_db()
+        services.segna_sezione_completa(sessione, self.f_rete, 'attestati')
+        self.assertIsNotNone(sessione.attestati_caricati_il)
+
+    # --- aula creata dal fornitore ---
+
+    def test_fornitore_crea_aula_subito_confermata(self):
+        c = self._client(self.f_rete)
+        opzioni = c.get('/api/ehs/aula-fornitore/').json()
+        self.assertEqual([o['corso_id'] for o in opzioni], [self.corso.id])
+        self.assertIn(self.negozio.id, [n['id'] for n in opzioni[0]['negozi']])
+        dati = {
+            'corso': self.corso.id, 'negozio': self.negozio.id, 'data': _prossima_mezzora(8).isoformat(),
+            'docente_nome': 'Doc', 'docente_telefono': '333', 'partecipanti_min': 3, 'partecipanti_max': 12,
+            'modalita': 'PRESENZA',
+        }
+        r = c.post('/api/ehs/aula-fornitore/', dati, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        sessione = EHSSessione.objects.get(pk=r.json()['id'])
+        self.assertEqual((sessione.stato, sessione.fornitore, sessione.creata_da), ('CONFERMATA', self.f_rete, self.f_rete))
+        self.assertIsNotNone(sessione.calendario_evento)
+        self.assertEqual(sessione.calendario_evento.max_partecipanti, 12)
+        self.assertTrue(r.json()['creata_dal_fornitore'])
+        # visibile allo store, che iscrive come sempre
+        self.assertIn(sessione.id, [s['id'] for s in self._client(self.store_user).get('/api/ehs/sessioni/').json()])
+        # fuori perimetro: il fornitore 'fuori' non serve Firenze
+        r = self._client(self.f_fuori).post('/api/ehs/aula-fornitore/', dati, format='json')
+        self.assertEqual(r.status_code, 400)
+        # store e admin non usano questo canale
+        self.assertEqual(self._client(self.store_user).post('/api/ehs/aula-fornitore/', dati, format='json').status_code, 403)
+        # data passata rifiutata
+        r = c.post('/api/ehs/aula-fornitore/', {**dati, 'data': _prossima_mezzora(-1).isoformat()}, format='json')
+        self.assertEqual(r.status_code, 400)
 
     def test_calendario_fornitore_vede_solo_occupato_altrui(self):
         sessione = self._conferma(self._crea(), giorni=10)
@@ -246,21 +318,19 @@ class EHSFlussiTest(TestCase):
                                      data=oggi - timedelta(days=65), fonte='manuale')
         self.assertEqual(self._client(self.store_user).get('/api/ehs/scadenze/').json(), [])
 
-    def test_notifiche_scadenza_dal_registro_una_volta_al_giorno(self):
+    def test_automatismi_giornalieri_senza_popup_scadenza(self):
         from .models import EHSConfigurazione, EHSFormazione, EHSNotificaScadenza
         oggi = timezone.now().date()
         EHSFormazione.objects.create(utente=self.collaboratore, corso=self.corso,
                                      data=oggi - timedelta(days=345), fonte='import')
-        # Già scaduta: resta nel pannello ma non genera popup.
-        altro = EHSCorso.objects.create(codice='EHS0002', nome='Primo soccorso', durata_ore=4, scadenza_giorni=365)
-        EHSFormazione.objects.create(utente=self.collaboratore, corso=altro,
-                                     data=oggi - timedelta(days=400), fonte='import')
         EHSConfigurazione.objects.update_or_create(pk=1, defaults={'ultimo_controllo_giornaliero': None})
-        self.assertEqual(services.esegui_automatismi_giornalieri(), 1)
+        self.assertEqual(services.esegui_automatismi_giornalieri(), 0)
         self.assertIsNone(services.esegui_automatismi_giornalieri())  # stesso giorno: non riparte
-        self.assertEqual(EHSNotificaScadenza.objects.count(), 1)
-        popup = self._client(self.store_user).get('/api/ehs/notifiche-scadenza/').json()
-        self.assertEqual([(p['corso_nome'], p['utente_nome']) for p in popup], [('Antincendio', 'Rossi Mario')])
+        self.assertEqual(EHSNotificaScadenza.objects.count(), 0)
+        # anche eventuali popup vecchi non letti non vengono più mostrati
+        f = EHSFormazione.objects.get()
+        EHSNotificaScadenza.objects.create(formazione=f, negozio_destinatario=self.negozio)
+        self.assertEqual(self._client(self.store_user).get('/api/ehs/notifiche-scadenza/').json(), [])
 
     # --- gestione corsi con offerte ---
 
@@ -343,7 +413,7 @@ class EHSFormazioneObbligatoriaTest(TestCase):
         services.rispondi_data(sessione, self.store_user, accetta=True)
         sessione.refresh_from_db()
         p = EHSPartecipante.objects.create(sessione=sessione, utente=self.tm_user)
-        services.chiudi_aula(sessione, {p.id: True}, [SimpleUploadedFile('r.pdf', b'x')], fornitore)
+        services.chiudi_aula(sessione, {p.id: True}, None, fornitore)
         f = self.tm_user.ehs_formazioni.get()
         self.assertEqual((f.corso, f.fonte, f.partecipante), (self.corso, 'aula', p))
         self.assertIsNotNone(f.scadenza)
@@ -457,12 +527,13 @@ class EHSRegoleAuleTest(TestCase):
         piena = self._conferma(self._crea(), giorni=4)
         self._iscrivi(vicina, 2)
         self._iscrivi(piena, 3)
-        self.assertEqual(services.controlla_minimo_partecipanti(), (1, 0))
-        avvisi = EHSAvviso.objects.filter(sessione=vicina, tipo='minimo_partecipanti')
-        self.assertEqual({(a.negozio_id, a.utente_id) for a in avvisi},
-                         {(self.negozio.id, None), (None, self.admin_ehs.id), (None, self.f_rete.id)})
-        self.assertEqual(self._client(self.store_user).get('/api/ehs/avvisi/').json()[0]['tipo'],
-                         'minimo_partecipanti')
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(services.controlla_minimo_partecipanti(), (1, 0))
+        # nessun popup in app: restano le email
+        self.assertFalse(EHSAvviso.objects.exists())
+        self.assertEqual(self._client(self.store_user).get('/api/ehs/avvisi/').json(), [])
+        self.assertTrue(any('Minimo partecipanti' in m.subject for m in mail.outbox))
+
         # stesso giorno nessun annullamento, il giorno dopo sì
         self.assertEqual(services.controlla_minimo_partecipanti(), (0, 0))
         self.assertEqual(services.controlla_minimo_partecipanti(timezone.now() + timedelta(days=1)), (0, 1))
@@ -470,7 +541,7 @@ class EHSRegoleAuleTest(TestCase):
             s.refresh_from_db()
         self.assertEqual((lontana.stato, vicina.stato, piena.stato), ('CONFERMATA', 'ANNULLATA', 'CONFERMATA'))
         self.assertIsNone(vicina.calendario_evento)
-        self.assertEqual(EHSAvviso.objects.filter(sessione=vicina, tipo='annullata_minimo').count(), 3)
+        self.assertFalse(EHSAvviso.objects.exists())
 
     def test_rinnovo_solo_negli_ultimi_120_giorni(self):
         from .models import EHSFormazione

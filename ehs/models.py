@@ -161,6 +161,14 @@ class EHSSessione(models.Model):
         'users.User', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='ehs_attestati_caricati',
     )
+    # Dopo la chiusura il fornitore carica i documenti in due sezioni (Presenze e
+    # Attestati), entro GIORNI_CARICAMENTO_DOCUMENTI: quando ha finito una sezione la
+    # segna come completa (la "V" diventa verde). Per gli attestati vale attestati_caricati_il.
+    presenze_caricate_il = models.DateTimeField(null=True, blank=True)
+    presenze_caricate_da = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='ehs_presenze_caricate',
+    )
 
     creata_il = models.DateTimeField(auto_now_add=True)
     aggiornata_il = models.DateTimeField(auto_now=True)
@@ -176,9 +184,14 @@ class EHSSessione(models.Model):
 
 
 class EHSSessioneDocumento(models.Model):
-    """File caricati dal fornitore alla chiusura aula (registro compilato e
-    qualunque altro documento): più file per sessione."""
+    """File caricati dal fornitore dopo la chiusura aula, nella sezione Presenze
+    (registro compilato e altri documenti) o Attestati: più file per sessione."""
+    TIPO_CHOICES = [
+        ('presenze', 'Presenze'),
+        ('attestati', 'Attestati'),
+    ]
     sessione = models.ForeignKey(EHSSessione, on_delete=models.CASCADE, related_name='documenti')
+    tipo = models.CharField(max_length=10, choices=TIPO_CHOICES, default='presenze')
     file = models.FileField(upload_to='ehs/registri_compilati/')
     nome_originale = models.CharField(max_length=255, blank=True)
     caricato_il = models.DateTimeField(auto_now_add=True)
