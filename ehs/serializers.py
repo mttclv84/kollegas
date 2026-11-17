@@ -8,7 +8,9 @@ from .models import (
     EHSCorso, EHSFormazione, EHSMansione, EHSObbligo, EHSOffertaCorso, EHSPartecipante, EHSSessione,
     EHSSessioneDocumento, EHSSessioneLog,
 )
-from .services import cancellazione_consentita, minimo_partecipanti, scadenza_caricamento_documenti
+from .services import (
+    cancellazione_consentita, chiusura_consentita, minimo_partecipanti, scadenza_caricamento_documenti,
+)
 
 User = get_user_model()
 
@@ -211,6 +213,7 @@ class EHSSessioneDetailSerializer(EHSSessioneListSerializer):
     documenti = EHSSessioneDocumentoSerializer(many=True, read_only=True)
     log = EHSSessioneLogSerializer(many=True, read_only=True)
     cancellazione_consentita = serializers.SerializerMethodField()
+    chiusura_consentita = serializers.SerializerMethodField()
 
     class Meta(EHSSessioneListSerializer.Meta):
         fields = EHSSessioneListSerializer.Meta.fields + [
@@ -218,7 +221,7 @@ class EHSSessioneDetailSerializer(EHSSessioneListSerializer):
             'docente_telefono', 'contatto_negozio_telefono',
             'registro_file', 'link_online', 'motivazione_eccezione',
             'calendario_evento', 'chiusa_da', 'note',
-            'partecipanti', 'documenti', 'log', 'cancellazione_consentita',
+            'partecipanti', 'documenti', 'log', 'cancellazione_consentita', 'chiusura_consentita',
         ]
 
     def get_cancellazione_consentita(self, obj):
@@ -227,6 +230,14 @@ class EHSSessioneDetailSerializer(EHSSessioneListSerializer):
         if not request:
             return True
         return cancellazione_consentita(obj, request.user)
+
+    def get_chiusura_consentita(self, obj):
+        """'Aula completata' disponibile per l'utente corrente: giorno dell'aula e
+        giorno dopo per il fornitore, sempre per Admin / Admin EHS."""
+        request = self.context.get('request')
+        if not request or obj.stato != 'CONFERMATA':
+            return False
+        return chiusura_consentita(obj, request.user)
 
 
 class EHSCalendarioEventoSerializer(serializers.ModelSerializer):

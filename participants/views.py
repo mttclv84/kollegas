@@ -27,8 +27,14 @@ GIORNI_CHIUSURA_AULA = 7
 MSG_AULA_CHIUSA = 'Aula chiusa: sono passati più di 7 giorni, i partecipanti sono solo consultabili.'
 
 
+def senza_limiti(evento, utente):
+    """L'Admin interviene su qualunque aula; l'Admin EHS su quelle EHS (aggiunge e
+    toglie partecipanti anche ad aula chiusa o completata, oltre il limite posti)."""
+    return utente.livello_accesso == 'admin' or (utente.livello_accesso == 'admin_ehs' and evento.is_ehs)
+
+
 def aula_chiusa(evento, utente):
-    return utente.livello_accesso != 'admin' and evento.data < date.today() - timedelta(days=GIORNI_CHIUSURA_AULA)
+    return not senza_limiti(evento, utente) and evento.data < date.today() - timedelta(days=GIORNI_CHIUSURA_AULA)
 
 
 class IscrizioneListCreateView(generics.ListCreateAPIView):
@@ -80,12 +86,13 @@ class IscrizioneListCreateView(generics.ListCreateAPIView):
             self.permission_denied(self.request, message=MSG_AULA_CHIUSA)
         # Ogni evento del calendario è aperto a tutti gli store fino a esaurimento posti
         # (max_partecipanti = 0 significa senza limite).
-        if evento.max_partecipanti and evento.iscrizioni.count() >= evento.max_partecipanti:
+        if (not (evento.is_ehs and senza_limiti(evento, user)) and evento.max_partecipanti
+                and evento.iscrizioni.count() >= evento.max_partecipanti):
             raise ValidationError({'detail': f'Posti esauriti: massimo {evento.max_partecipanti} partecipanti.'})
         if evento.is_ehs:
             from ehs.services import TransizioneNonValida, verifica_iscrizione
             try:
-                verifica_iscrizione(evento, target_user)
+                verifica_iscrizione(evento, target_user, operatore=user)
             except TransizioneNonValida as e:
                 raise ValidationError({'detail': str(e)})
         serializer.save()
@@ -109,13 +116,23 @@ class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def destroy(self, request, *args, **kwargs):
         user = request.user
-        if aula_chiusa(self.get_object().evento, user):
+        iscrizione = self.get_object()
+        evento = iscrizione.evento
+        if aula_chiusa(evento, user):
             return Response({'detail': MSG_AULA_CHIUSA}, status=status.HTTP_403_FORBIDDEN)
-        # Tra i ruoli di sede solo l'Admin elimina gli iscritti: HO/Area/Admin EHS segnano le presenze.
-        if user.livello_accesso in ('ho', 'area', 'admin_ehs'):
+        # Tra i ruoli di sede solo l'Admin elimina gli iscritti (l'Admin EHS anche, ma solo
+        # sulle formazioni EHS): HO/Area segnano le presenze.
+        if user.livello_accesso in ('ho', 'area') or (user.livello_accesso == 'admin_ehs' and not evento.is_ehs):
             return Response({'detail': 'Solo l\'Admin può eliminare un iscritto.'}, status=status.HTTP_403_FORBIDDEN)
+        if evento.is_ehs and senza_limiti(evento, user):
+            # Su un'aula EHS già completata il signal non tocca lo storico: qui si toglie
+            # anche il partecipante e la riga del registro nata da quell'aula.
+            from ehs.models import EHSSessione
+            from ehs.services import rimuovi_partecipante_completata
+            sessione = EHSSessione.objects.filter(calendario_evento=evento, stato='COMPLETATA').first()
+            if sessione is not None:
+                rimuovi_partecipante_completata(sessione, iscrizione.user)
         if user.livello_accesso == 'store':
-            iscrizione = self.get_object()
             delta = (iscrizione.evento.data - date.today()).days
             soglia = giorni_blocco(iscrizione.evento)
             if delta < soglia:

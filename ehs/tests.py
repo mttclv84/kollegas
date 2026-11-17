@@ -53,6 +53,17 @@ class EHSFlussiTest(TestCase):
     def _crea(self, **kw):
         return services.crea_richiesta(self.store_user, self.corso, self.negozio, 'Ref', '', **kw)
 
+    def _a_oggi(self, sessione, giorni=0):
+        """Sposta la data dell'aula a oggi (+/- giorni) per poterla chiudere."""
+        nuova = timezone.now() + timedelta(days=giorni)
+        EHSSessione.objects.filter(pk=sessione.pk).update(data_confermata=nuova)
+        sessione.refresh_from_db()
+        if sessione.calendario_evento_id:
+            from events.models import Evento
+            Evento.objects.filter(pk=sessione.calendario_evento_id).update(data=timezone.localtime(nuova).date())
+            sessione.calendario_evento.refresh_from_db()
+        return sessione
+
     def _conferma(self, sessione, giorni=10, link=None):
         services.proponi_data(sessione, self.f_rete, _prossima_mezzora(giorni), 'Docente', '333', link_online=link,
                               partecipanti_min=3, partecipanti_max=10)
@@ -197,6 +208,7 @@ class EHSFlussiTest(TestCase):
         sessione = self._conferma(self._crea(), giorni=10)
         Iscrizione.objects.create(evento=sessione.calendario_evento, user=self.collaboratore, stato='iscritto')
         p = EHSPartecipante.objects.get(sessione=sessione)
+        self._a_oggi(sessione)
         c = self._client(self.f_rete)
         r = c.post(f'/api/ehs/sessioni/{sessione.id}/chiudi-aula/', {f'presente_{p.id}': 'true'}, format='multipart')
         self.assertEqual(r.status_code, 200, r.content)
@@ -245,7 +257,7 @@ class EHSFlussiTest(TestCase):
             d.file.delete(save=False)
 
     def test_caricamento_documenti_entro_45_giorni(self):
-        sessione = self._conferma(self._crea(), giorni=10)
+        sessione = self._a_oggi(self._conferma(self._crea(), giorni=10))
         services.chiudi_aula(sessione, {}, None, self.f_rete)
         EHSSessione.objects.filter(pk=sessione.pk).update(data_chiusura=timezone.now() - timedelta(days=46))
         sessione.refresh_from_db()
@@ -354,6 +366,71 @@ class EHSFlussiTest(TestCase):
         }, format='json')
         self.assertEqual(r.status_code, 400)
 
+    # --- finestra di chiusura aula e interventi Admin / Admin EHS ---
+
+    def test_fornitore_chiude_il_giorno_e_il_giorno_dopo_non_prima_ne_oltre(self):
+        for giorni, ok in ((1, False), (-2, False), (-1, True)):
+            sessione = self._a_oggi(self._conferma(self._crea()), giorni)
+            self.assertEqual(services.chiusura_consentita(sessione, self.f_rete), ok, giorni)
+            if not ok:
+                with self.assertRaises(TransizioneNonValida):
+                    services.chiudi_aula(sessione, {}, None, self.f_rete)
+        self.assertEqual(sessione.stato, 'CONFERMATA')
+        services.chiudi_aula(sessione, {}, None, self.f_rete)
+        self.assertEqual(sessione.stato, 'COMPLETATA')
+
+    def test_admin_ehs_chiude_in_qualunque_giorno(self):
+        sessione = self._a_oggi(self._conferma(self._crea()), -20)
+        r = self._client(self.admin_ehs).get(f'/api/ehs/sessioni/{sessione.id}/')
+        self.assertTrue(r.json()['chiusura_consentita'])
+        r = self._client(self.f_rete).get(f'/api/ehs/sessioni/{sessione.id}/')
+        self.assertFalse(r.json()['chiusura_consentita'])
+        services.chiudi_aula(sessione, {}, None, self.admin_ehs)
+        self.assertEqual(sessione.stato, 'COMPLETATA')
+
+    def test_admin_ehs_aggiunge_partecipante_e_modifica_presenze_dopo_chiusura(self):
+        from .models import EHSFormazione
+        sessione = self._a_oggi(self._conferma(self._crea()), -20)
+        services.chiudi_aula(sessione, {}, None, self.admin_ehs)
+        evento = sessione.calendario_evento
+        # aula chiusa da oltre 7 giorni: lo store non aggiunge, l'Admin EHS sì
+        corpo = {'evento': evento.id, 'user': self.collaboratore.id, 'stato': 'iscritto'}
+        self.assertEqual(self._client(self.store_user).post('/api/iscrizioni/', corpo, format='json').status_code, 403)
+        r = self._client(self.admin_ehs).post('/api/iscrizioni/', corpo, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        p = EHSPartecipante.objects.get(sessione=sessione, utente=self.collaboratore)
+
+        url = f'/api/ehs/sessioni/{sessione.id}/modifica-presenze/'
+        self.assertEqual(self._client(self.f_rete).post(url, {f'presente_{p.id}': 'true'}).status_code, 403)
+        r = self._client(self.admin_ehs).post(url, {f'presente_{p.id}': 'true'})
+        self.assertEqual(r.status_code, 200, r.content)
+        f = EHSFormazione.objects.get(utente=self.collaboratore)
+        self.assertEqual(f.data, timezone.localtime(sessione.data_confermata).date())
+        self.assertEqual(Iscrizione.objects.get(evento=evento, user=self.collaboratore).stato, 'partecipato')
+
+        # tolta la presenza, sparisce dal registro
+        self._client(self.admin_ehs).post(url, {f'presente_{p.id}': 'false', f'motivo_{p.id}': 'Malattia'})
+        self.assertFalse(EHSFormazione.objects.filter(utente=self.collaboratore).exists())
+        p.refresh_from_db()
+        self.assertEqual((p.presente, p.assente_motivo), (False, 'Malattia'))
+
+        # rimozione del partecipante da aula completata
+        self._client(self.admin_ehs).post(url, {f'presente_{p.id}': 'true'})
+        r = self._client(self.admin_ehs).delete(f'/api/ehs/sessioni/{sessione.id}/partecipanti/{p.id}/')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertFalse(EHSPartecipante.objects.filter(pk=p.pk).exists())
+        self.assertFalse(EHSFormazione.objects.filter(utente=self.collaboratore).exists())
+
+    def test_admin_ehs_supera_posti_massimi(self):
+        sessione = self._conferma(self._crea())
+        EHSSessione.objects.filter(pk=sessione.pk).update(partecipanti_max=1)
+        sessione.refresh_from_db()
+        services.verifica_iscrizione(sessione.calendario_evento, self.collaboratore)
+        EHSPartecipante.objects.create(sessione=sessione, utente=self.store_user)
+        with self.assertRaises(TransizioneNonValida):
+            services.verifica_iscrizione(sessione.calendario_evento, self.collaboratore, operatore=self.store_user)
+        services.verifica_iscrizione(sessione.calendario_evento, self.collaboratore, operatore=self.admin_ehs)
+
 
 @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend', EHS_EMAIL_ATTIVE=False)
 class EHSEmailBloccateTest(TestCase):
@@ -413,9 +490,13 @@ class EHSFormazioneObbligatoriaTest(TestCase):
         services.rispondi_data(sessione, self.store_user, accetta=True)
         sessione.refresh_from_db()
         p = EHSPartecipante.objects.create(sessione=sessione, utente=self.tm_user)
+        # chiusura il giorno dopo l'aula: la formazione resta datata al giorno dell'aula
+        EHSSessione.objects.filter(pk=sessione.pk).update(data_confermata=timezone.now() - timedelta(days=1))
+        sessione.refresh_from_db()
         services.chiudi_aula(sessione, {p.id: True}, None, fornitore)
         f = self.tm_user.ehs_formazioni.get()
         self.assertEqual((f.corso, f.fonte, f.partecipante), (self.corso, 'aula', p))
+        self.assertEqual(f.data, timezone.localtime(sessione.data_confermata).date())
         self.assertIsNotNone(f.scadenza)
 
     def test_matrice_modificabile_solo_da_admin_ehs(self):

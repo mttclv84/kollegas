@@ -13,6 +13,7 @@ urlpatterns = [
     path('ehs/sessioni/<int:pk>/rispondi-data/', views.EHSRispondiDataView.as_view(), name='ehs-rispondi-data'),
     path('ehs/sessioni/<int:pk>/accetta-controproposta/', views.EHSAccettaContropropostaView.as_view(), name='ehs-accetta-controproposta'),
     path('ehs/sessioni/<int:pk>/chiudi-aula/', views.EHSChiudiAulaView.as_view(), name='ehs-chiudi-aula'),
+    path('ehs/sessioni/<int:pk>/modifica-presenze/', views.EHSModificaPresenzeView.as_view(), name='ehs-modifica-presenze'),
     path('ehs/sessioni/<int:pk>/annulla/', views.EHSAnnullaView.as_view(), name='ehs-annulla'),
     path('ehs/sessioni/<int:pk>/assegna-fornitore/', views.EHSAssegnaFornitoreView.as_view(), name='ehs-assegna-fornitore'),
     path('ehs/sessioni/<int:pk>/non-disponibile/', views.EHSNonDisponibileView.as_view(), name='ehs-non-disponibile'),

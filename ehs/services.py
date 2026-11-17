@@ -33,6 +33,32 @@ GIORNI_RINNOVO_ANTICIPATO = 120
 # documenti delle sezioni Presenze e Attestati.
 GIORNI_CARICAMENTO_DOCUMENTI = 45
 SEZIONI_DOCUMENTI = ('presenze', 'attestati')
+# "Aula completata" (presenti/assenti): il fornitore la chiude il giorno dell'aula o
+# entro questo numero di giorni dopo. Admin e Admin EHS intervengono senza limiti
+# (chiusura in qualunque giorno, presenze modificabili anche dopo, partecipanti
+# aggiunti o tolti anche ad aula completata).
+GIORNI_CHIUSURA_DOPO_AULA = 1
+RUOLI_SENZA_LIMITI = ('admin', 'admin_ehs')
+
+
+def senza_limiti(utente):
+    return getattr(utente, 'livello_accesso', None) in RUOLI_SENZA_LIMITI
+
+
+def giorno_aula(sessione):
+    """Giorno di svolgimento dell'aula (data confermata, in ora locale)."""
+    return timezone.localtime(sessione.data_confermata).date() if sessione.data_confermata else None
+
+
+def chiusura_consentita(sessione, utente):
+    """Il fornitore (e HO) chiude l'aula dal giorno di svolgimento fino al giorno
+    successivo; Admin e Admin EHS in qualunque momento."""
+    if senza_limiti(utente):
+        return True
+    giorno = giorno_aula(sessione)
+    if giorno is None:
+        return False
+    return giorno <= timezone.localdate() <= giorno + timedelta(days=GIORNI_CHIUSURA_DOPO_AULA)
 
 
 class TransizioneNonValida(Exception):
@@ -603,7 +629,8 @@ def _verifica_cancellazione(sessione, utente, cosa):
 def rimuovi_partecipante(sessione, partecipante, utente):
     """Cancella l'iscrizione di un partecipante a una sessione confermata (store,
     fornitore o Admin), nel rispetto della regola dei 7 giorni."""
-    if sessione.stato != 'CONFERMATA':
+    completata = sessione.stato == 'COMPLETATA' and senza_limiti(utente)
+    if sessione.stato != 'CONFERMATA' and not completata:
         raise TransizioneNonValida(f'Non è possibile rimuovere partecipanti dallo stato {sessione.stato}.')
     if utente.livello_accesso == 'store' and utente.store_id not in (sessione.negozio_id, partecipante.utente.store_id):
         raise TransizioneNonValida('Puoi rimuovere solo partecipanti della tua sessione o del tuo negozio.')
@@ -615,6 +642,8 @@ def rimuovi_partecipante(sessione, partecipante, utente):
         nome = partecipante.utente.nome_completo
         if sessione.calendario_evento_id:
             Iscrizione.objects.filter(evento_id=sessione.calendario_evento_id, user=partecipante.utente).delete()
+        if completata:
+            rimuovi_partecipante_completata(sessione, partecipante.utente)
         # Il signal su Iscrizione rimuove già il partecipante; questo copre i dati incoerenti.
         type(partecipante).objects.filter(pk=partecipante.pk).delete()
         _log(sessione, sessione.stato, sessione.stato, utente, f'Iscrizione cancellata: {nome}')
@@ -714,8 +743,14 @@ def chiudi_aula(sessione, presenze, files=None, utente_fornitore=None, assenze_m
         raise TransizioneNonValida("Solo il Fornitore (o Admin/HO) può chiudere l'aula.")
     if sessione.stato != 'CONFERMATA':
         raise TransizioneNonValida(f"Non è possibile chiudere l'aula dallo stato {sessione.stato}.")
-
-    from participants.models import Iscrizione
+    if not chiusura_consentita(sessione, utente_fornitore):
+        giorno = giorno_aula(sessione)
+        if giorno and timezone.localdate() < giorno:
+            raise TransizioneNonValida(
+                f"L'aula si può chiudere dal giorno della formazione ({giorno.strftime('%d/%m/%Y')}).")
+        raise TransizioneNonValida(
+            "Termine per comunicare presenti e assenti scaduto (giorno della formazione e giorno "
+            "successivo). Contatta l'EHS Admin.")
 
     with transaction.atomic():
         now = timezone.now()
@@ -724,33 +759,87 @@ def chiudi_aula(sessione, presenze, files=None, utente_fornitore=None, assenze_m
         sessione.stato = 'COMPLETATA'
         sessione.save()
 
-        presenti = 0
-        for partecipante in sessione.partecipanti.all():
-            partecipante.presente = bool(presenze.get(partecipante.id, False))
-            if partecipante.presente:
-                presenti += 1
-                partecipante.completato = True
-                partecipante.completato_il = now
-                partecipante.assente_motivo = ''
-                if sessione.corso.scadenza_giorni:
-                    partecipante.scadenza_formazione = now.date() + timedelta(days=sessione.corso.scadenza_giorni)
-            else:
-                partecipante.completato = False
-                partecipante.assente_motivo = assenze_motivo.get(partecipante.id, '')
-            partecipante.save()
-            if partecipante.presente:
-                registra_formazione_da_aula(partecipante, now.date())
+        for partecipante in sessione.partecipanti.select_related('utente'):
+            _applica_presenza(sessione, partecipante, bool(presenze.get(partecipante.id, False)),
+                              assenze_motivo.get(partecipante.id, ''), now)
 
-            # Allinea l'iscrizione standard (Report/Completamento generali di Kollegas):
-            # un assente EHS deve risultare "assente" anche fuori dalla sezione EHS.
-            if sessione.calendario_evento_id:
-                Iscrizione.objects.filter(
-                    evento_id=sessione.calendario_evento_id, user=partecipante.utente
-                ).update(stato='partecipato' if partecipante.presente else 'assente')
-
+        presenti = sessione.partecipanti.filter(presente=True).count()
         _log(sessione, 'CONFERMATA', 'COMPLETATA', utente_fornitore,
              f'Chiusura aula: {presenti} presenti su {sessione.partecipanti.count()}')
     return sessione
+
+
+def _applica_presenza(sessione, partecipante, presente, motivo, now):
+    """Registra presente/assente di un partecipante: registro formazioni (con la data
+    dell'aula, anche se la chiusura avviene il giorno dopo) e iscrizione standard."""
+    from participants.models import Iscrizione
+    from .models import EHSFormazione
+
+    data_formazione = giorno_aula(sessione) or now.date()
+    partecipante.presente = presente
+    if presente:
+        partecipante.completato = True
+        partecipante.completato_il = partecipante.completato_il or now
+        partecipante.assente_motivo = ''
+        partecipante.scadenza_formazione = (
+            data_formazione + timedelta(days=sessione.corso.scadenza_giorni)
+            if sessione.corso.scadenza_giorni else None
+        )
+    else:
+        partecipante.completato = False
+        partecipante.completato_il = None
+        partecipante.scadenza_formazione = None
+        partecipante.assente_motivo = motivo or ''
+    partecipante.save()
+    if presente:
+        registra_formazione_da_aula(partecipante, data_formazione)
+    else:
+        # Presenza tolta in un secondo momento (Admin): via la riga dal registro.
+        EHSFormazione.objects.filter(partecipante=partecipante, fonte='aula').delete()
+
+    # Allinea l'iscrizione standard (Report/Completamento generali di Kollegas):
+    # un assente EHS deve risultare "assente" anche fuori dalla sezione EHS.
+    if sessione.calendario_evento_id:
+        Iscrizione.objects.filter(
+            evento_id=sessione.calendario_evento_id, user=partecipante.utente
+        ).update(stato='partecipato' if presente else 'assente')
+
+
+def modifica_presenze(sessione, utente, presenze, assenze_motivo=None):
+    """Admin / Admin EHS correggono presenti e assenti di un'aula già completata
+    (anche dopo partecipanti aggiunti in un secondo momento), senza limiti di tempo.
+    presenze: {partecipante_id: bool}; i partecipanti non indicati restano invariati."""
+    assenze_motivo = assenze_motivo or {}
+    if not senza_limiti(utente):
+        raise TransizioneNonValida('Solo Admin e Admin EHS possono modificare le presenze di un\'aula completata.')
+    if sessione.stato != 'COMPLETATA':
+        raise TransizioneNonValida(f'Non è possibile modificare le presenze dallo stato {sessione.stato}.')
+
+    with transaction.atomic():
+        now = timezone.now()
+        modificati = 0
+        for partecipante in sessione.partecipanti.select_related('utente'):
+            if partecipante.id not in presenze:
+                continue
+            _applica_presenza(sessione, partecipante, presenze[partecipante.id],
+                              assenze_motivo.get(partecipante.id, ''), now)
+            modificati += 1
+        presenti = sessione.partecipanti.filter(presente=True).count()
+        _log(sessione, sessione.stato, sessione.stato, utente,
+             f'Presenze modificate: {presenti} presenti su {sessione.partecipanti.count()}')
+    return sessione
+
+
+def rimuovi_partecipante_completata(sessione, utente_target):
+    """Partecipante tolto da un'aula già completata (Admin / Admin EHS): rimuove anche
+    la riga del registro formazioni nata da quell'aula."""
+    from .models import EHSFormazione, EHSPartecipante
+
+    partecipante = EHSPartecipante.objects.filter(sessione=sessione, utente=utente_target).first()
+    if partecipante is None:
+        return
+    EHSFormazione.objects.filter(partecipante=partecipante, fonte='aula').delete()
+    partecipante.delete()
 
 
 def scadenza_caricamento_documenti(sessione):
@@ -1082,14 +1171,17 @@ def rinnovabile_dal(formazione):
     return formazione.scadenza - timedelta(days=GIORNI_RINNOVO_ANTICIPATO)
 
 
-def verifica_iscrizione(evento, utente):
+def verifica_iscrizione(evento, utente, operatore=None):
     """Regole per iscrivere una persona a un'aula EHS: posti entro il massimo indicato
-    dal fornitore e, se ha già la formazione valida, rinnovo solo negli ultimi
-    GIORNI_RINNOVO_ANTICIPATO giorni prima della scadenza."""
+    dal fornitore (non per Admin / Admin EHS) e, se ha già la formazione valida,
+    rinnovo solo negli ultimi GIORNI_RINNOVO_ANTICIPATO giorni prima della scadenza."""
     sessione = getattr(evento, 'ehs_sessione', None)
     if sessione is None:
         return
-    if sessione.partecipanti_max and sessione.partecipanti.count() >= sessione.partecipanti_max:
+    if sessione.stato in ('ANNULLATA', 'RIFIUTATA'):
+        raise TransizioneNonValida('La formazione è annullata: non si possono aggiungere partecipanti.')
+    if (not senza_limiti(operatore) and sessione.partecipanti_max
+            and sessione.partecipanti.count() >= sessione.partecipanti_max):
         raise TransizioneNonValida(f'Posti esauriti: massimo {sessione.partecipanti_max} partecipanti.')
     formazione = ultima_formazione(utente, sessione.corso)
     dal = rinnovabile_dal(formazione)

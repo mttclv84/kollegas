@@ -357,6 +357,29 @@ class EHSChiudiAulaView(BaseEHSSessioneActionView):
         return self.risposta(request, sessione)
 
 
+class EHSModificaPresenzeView(BaseEHSSessioneActionView):
+    """Admin / Admin EHS correggono presenti e assenti di un'aula già completata
+    (stessi campi della chiusura: 'presente_<id>', 'motivo_<id>')."""
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def post(self, request, pk):
+        sessione = self.get_sessione_visibile(request, pk)
+        presenze, assenze_motivo = {}, {}
+        for p in sessione.partecipanti.all():
+            valore = request.data.get(f'presente_{p.id}')
+            if valore is None:
+                continue
+            presenze[p.id] = str(valore).lower() in ('true', '1', 'on')
+            motivo = request.data.get(f'motivo_{p.id}')
+            if motivo:
+                assenze_motivo[p.id] = motivo
+        try:
+            sessione = services.modifica_presenze(sessione, request.user, presenze, assenze_motivo)
+        except TransizioneNonValida as e:
+            return Response({'detail': str(e)}, status=403)
+        return self.risposta(request, sessione)
+
+
 class EHSAssegnaFornitoreView(BaseEHSSessioneActionView):
     """Assegna un fornitore idoneo a una richiesta ancora senza fornitore o rimasta
     senza fornitore disponibile (store o Admin/HO) — necessario perché un fornitore
