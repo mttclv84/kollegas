@@ -518,11 +518,11 @@ class EHSFormazioneObbligatoriaTest(TestCase):
         self.assertEqual(services.ultima_formazione(self.tm_user, self.corso), f)
         self.assertEqual(services.ultima_formazione(self.tm_user, agg), f)
 
-    def test_disattiva_corso_solo_admin(self):
+    def test_disattiva_admin_ehs_riattiva_solo_admin(self):
         admin = User.objects.create_user(email='adm@x.it', password='x', cognome='A', nome='A', livello_accesso='admin')
         url = f'/api/ehs/corsi/{self.corso.id}/'
-        self.assertEqual(self._client(self.admin_ehs).delete(url).status_code, 403)
-        self.assertEqual(self._client(admin).delete(url).status_code, 204)
+        self.assertEqual(self._client(self.area).delete(url).status_code, 403)
+        self.assertEqual(self._client(self.admin_ehs).delete(url).status_code, 204)
         self.corso.refresh_from_db()
         self.assertFalse(self.corso.attivo)
         self.assertEqual(self._client(self.admin_ehs).patch(url, {'attivo': True}, format='json').status_code, 403)

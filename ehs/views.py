@@ -108,9 +108,11 @@ class EHSCorsoDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = EHSCorso.objects.prefetch_related('offerte__fornitore', 'offerte__negozi')
 
     def get_permissions(self):
-        # Disattivare e riattivare un corso è riservato all'Admin generale: i corsi
-        # disattivati finiscono in Disattivati > Corsi disattivati.
-        if self.request.method == 'DELETE' or 'attivo' in self.request.data:
+        # Disattivare un corso: Admin e Admin EHS. Riattivarlo solo l'Admin generale,
+        # l'unico che vede la sezione Disattivati > Corsi disattivati.
+        if self.request.method == 'DELETE':
+            return [IsAdminEHS()]
+        if 'attivo' in self.request.data:
             return [IsAdmin()]
         return [IsAdminOrHOEHS()]
 
