@@ -256,6 +256,20 @@ class EHSFlussiTest(TestCase):
         for d in sessione.documenti.all():
             d.file.delete(save=False)
 
+    def test_calendario_ehs_presenze_complete(self):
+        sessione = self._a_oggi(self._conferma(self._crea()))
+        Iscrizione.objects.create(evento=sessione.calendario_evento, user=self.collaboratore, stato='iscritto')
+        p = EHSPartecipante.objects.get(sessione=sessione)
+        oggi = timezone.localdate()
+        stato = lambda u: next(e for e in self._client(u).get(
+            '/api/ehs/calendario/', {'anno': oggi.year, 'mese': oggi.month}).json()
+            if e['id'] == sessione.calendario_evento_id).get('presenze_complete')
+        self.assertFalse(stato(self.admin_ehs))
+        services.chiudi_aula(sessione, {p.id: True}, None, self.f_rete)
+        self.assertTrue(stato(self.admin_ehs))
+        self.assertTrue(stato(self.f_rete))  # il fornitore dell'aula lo vede
+        self.assertIsNone(stato(self.f_fuori))  # per gli altri fornitori l'aula è solo "Occupato"
+
     def test_admin_ehs_riapre_sezione_completa(self):
         sessione = self._a_oggi(self._conferma(self._crea(), giorni=10))
         services.chiudi_aula(sessione, {}, None, self.f_rete)

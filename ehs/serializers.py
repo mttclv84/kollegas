@@ -278,18 +278,25 @@ class EHSCalendarioEventoSerializer(serializers.ModelSerializer):
     ehs_corso_nome = serializers.SerializerMethodField()
     ehs_negozio_codice = serializers.SerializerMethodField()
     ehs_negozio_id = serializers.SerializerMethodField()
+    presenze_complete = serializers.SerializerMethodField()
 
     class Meta:
         model = Evento
         fields = [
             'id', 'data', 'ora_inizio', 'ora_fine', 'attivita_nome', 'attivita_tipologia',
-            'location_display', 'max_partecipanti', 'iscritti_count', 'posti_disponibili',
+            'location_display', 'max_partecipanti', 'iscritti_count', 'posti_disponibili', 'presenze_complete',
             'is_ehs', 'ehs_luogo', 'ehs_sessione_id', 'ehs_sessione_stato',
             'ehs_corso_nome', 'ehs_negozio_codice', 'ehs_negozio_id',
         ]
 
     def get_iscritti_count(self, obj):
         return obj.iscrizioni.count()
+
+    def get_presenze_complete(self, obj):
+        """Tutti gli iscritti segnati presenti o assenti: rettangolino nero sul
+        calendario, come nel calendario generale (stessa regola di EventoListSerializer)."""
+        iscrizioni = list(obj.iscrizioni.all())
+        return bool(iscrizioni) and all(i.stato in ('partecipato', 'assente') for i in iscrizioni)
 
     def get_ehs_sessione_id(self, obj):
         sessione = getattr(obj, 'ehs_sessione', None)
