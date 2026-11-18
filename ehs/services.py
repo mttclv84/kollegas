@@ -948,6 +948,33 @@ def riapri_sezione(sessione, utente, tipo):
     return sessione
 
 
+def elimina_documento_admin(sessione, utente, documento):
+    """Dai Registri l'Admin generale cancella un documento caricato, anche da una
+    sezione già completa: sparisce dall'aula e la sezione si riapre, così il
+    fornitore può caricarne un altro."""
+    if utente.livello_accesso != 'admin':
+        raise TransizioneNonValida("Solo l'Admin può cancellare i documenti dai Registri.")
+    if documento.sessione_id != sessione.id:
+        raise TransizioneNonValida('Documento non trovato in questa aula.')
+    with transaction.atomic():
+        tipo, nome = documento.tipo, documento.nome_originale
+        if documento.file and not documento.archiviato_il:
+            documento.file.storage.delete(documento.file.name)
+        documento.delete()
+        nota = f'Documento cancellato da {tipo.capitalize()} (Admin): {nome}'
+        if sezione_completa(sessione, tipo):
+            if tipo == 'presenze':
+                sessione.presenze_caricate_il, sessione.presenze_caricate_da = None, None
+                campi = ['presenze_caricate_il', 'presenze_caricate_da', 'aggiornata_il']
+            else:
+                sessione.attestati_caricati_il, sessione.attestati_caricati_da = None, None
+                campi = ['attestati_caricati_il', 'attestati_caricati_da', 'aggiornata_il']
+            sessione.save(update_fields=campi)
+            nota += ' — sezione riaperta'
+        _log(sessione, sessione.stato, sessione.stato, utente, nota)
+    return sessione
+
+
 def segna_attestati_caricati(sessione, utente):
     """Compatibilità con il vecchio endpoint: equivale a completare la sezione Attestati."""
     return segna_sezione_completa(sessione, utente, 'attestati')

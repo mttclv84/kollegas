@@ -318,6 +318,34 @@ class EHSFlussiTest(TestCase):
         self.assertEqual((stato['da_archiviare'], len(stato['storico'])), (1, 1))
         self.assertIsNone(stato['esportazione_aperta'])
 
+    def test_solo_admin_cancella_documento_dai_registri_e_riapre_sezione(self):
+        admin = User.objects.create_user(email='adm2@x.it', password='x', cognome='A', nome='A', livello_accesso='admin')
+        sessione = self._a_oggi(self._conferma(self._crea(), giorni=10))
+        services.chiudi_aula(sessione, {}, None, self.f_rete)
+        services.carica_documenti(sessione, self.f_rete, 'presenze', [SimpleUploadedFile('r.pdf', b'%PDF')])
+        services.segna_sezione_completa(sessione, self.f_rete, 'presenze')
+        doc = sessione.documenti.get()
+        url = f'/api/ehs/registri/{sessione.id}/file/{doc.id}/'
+        for u in (self.admin_ehs, self.f_rete, self.store_user):
+            self.assertEqual(self._client(u).delete(url).status_code, 403)
+        self.assertEqual(self._client(admin).delete(url).status_code, 204)
+        sessione.refresh_from_db()
+        self.assertFalse(sessione.documenti.exists())
+        self.assertIsNone(sessione.presenze_caricate_il)
+        # il fornitore può ricaricare
+        services.carica_documenti(sessione, self.f_rete, 'presenze', [SimpleUploadedFile('nuovo.pdf', b'%PDF2')])
+        self.assertEqual(sessione.documenti.count(), 1)
+
+    def test_ricerca_persone_per_cognome(self):
+        self.collaboratore.livello_accesso = 'base'
+        self.collaboratore.save()
+        r = self._client(self.admin_ehs).get('/api/ehs/persone/', {'q': 'ross'})
+        self.assertEqual([p['id'] for p in r.json()], [self.collaboratore.id])
+        self.assertEqual(r.json()[0]['store_nome'], 'Firenze')
+        self.assertEqual(self._client(self.admin_ehs).get('/api/ehs/persone/', {'q': 'rossi mario'}).json()[0]['id'],
+                         self.collaboratore.id)
+        self.assertEqual(self._client(self.f_rete).get('/api/ehs/persone/', {'q': 'ross'}).json(), [])
+
     def test_admin_ehs_riapre_sezione_completa(self):
         sessione = self._a_oggi(self._conferma(self._crea(), giorni=10))
         services.chiudi_aula(sessione, {}, None, self.f_rete)

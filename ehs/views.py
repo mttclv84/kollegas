@@ -1022,6 +1022,16 @@ class EHSRegistroFileView(APIView):
             return Response({'detail': 'File non più disponibile sul server: va ricaricato.'}, status=410)
         return FileResponse(contenuto, content_type=content_type)
 
+    def delete(self, request, pk, documento_id=None):
+        """Solo Admin: cancella il documento dall'aula (la sezione si riapre)."""
+        sessione = get_object_or_404(EHSSessione, pk=pk)
+        documento = get_object_or_404(EHSSessioneDocumento, pk=documento_id, sessione=sessione)
+        try:
+            services.elimina_documento_admin(sessione, request.user, documento)
+        except TransizioneNonValida as e:
+            return Response({'detail': str(e)}, status=403)
+        return Response(status=204)
+
 
 class EHSScadenzeView(APIView):
     """Pannello 'Alert scadenze': formazioni che scadono entro 45 giorni (o già
@@ -1134,7 +1144,28 @@ class EHSPersoneView(APIView):
     con mansioni e registro formazioni."""
     permission_classes = [IsAuthenticated]
 
+    LIMITE_RICERCA = 50
+
     def get(self, request):
+        # ?q=<testo>: ricerca "aperta" per cognome, nome o matricola, su tutti i negozi
+        # (lo store solo sul proprio). Anche solo il cognome basta.
+        testo = (request.query_params.get('q') or '').strip()
+        if len(testo) >= 2:
+            user = request.user
+            if user.livello_accesso == 'store':
+                qs = services.persone_monitorate(user.store) if user.store_id else None
+            elif user.livello_accesso in RUOLI_LETTURA_OBBLIGHI:
+                qs = services._persone_monitorate_tutte().order_by('cognome', 'nome')
+            else:
+                qs = None
+            if qs is None:
+                return Response([])
+            for parola in testo.split():
+                qs = qs.filter(Q(cognome__icontains=parola) | Q(nome__icontains=parola)
+                               | Q(codice_matricola__icontains=parola))
+            qs = qs.select_related('store').prefetch_related('ehs_formazioni__corso')[:self.LIMITE_RICERCA]
+            return Response(EHSPersonaSerializer(qs, many=True).data)
+
         negozio = _negozio_consentito(request, request.query_params.get('negozio'))
         if negozio is None:
             return Response([])

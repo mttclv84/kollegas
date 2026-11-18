@@ -363,12 +363,13 @@ class EHSPersonaSerializer(serializers.ModelSerializer):
     """Persona soggetta alla matrice obblighi, con mansioni e registro formazioni."""
     nome_completo = serializers.ReadOnlyField()
     ruolo_nome = serializers.CharField(source='ruolo.nome', read_only=True, default=None)
+    store_nome = serializers.CharField(source='store.nome', read_only=True, default=None)
     mansioni = serializers.SerializerMethodField()
     formazioni = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'nome_completo', 'codice_matricola', 'ruolo', 'ruolo_nome', 'mansioni', 'formazioni']
+        fields = ['id', 'nome_completo', 'codice_matricola', 'ruolo', 'ruolo_nome', 'store_nome', 'mansioni', 'formazioni']
 
     def get_mansioni(self, obj):
         return [m.id for m in obj.ehs_mansioni.all()]
