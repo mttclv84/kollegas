@@ -1440,3 +1440,128 @@ def completamento_negozio(negozio):
             for p in persone
         ],
     }
+
+
+# --- Archivio mensile dei documenti EHS -----------------------------------------
+# Admin / Admin EHS scaricano una volta al mese in un unico ZIP i documenti delle
+# sezioni completate e poi svuotano Kollegas: resta la riga del documento (nome,
+# data, sezione) con la data di archiviazione, il contenuto vive nell'archivio aziendale.
+
+TESTO_CONFERMA_SVUOTA = 'SVUOTA'
+
+
+def _documenti_esportabili():
+    """Documenti non ancora archiviati né in un'esportazione aperta, di sezioni già
+    segnate come complete (una sezione a metà non si archivia) e con il file presente."""
+    from .models import EHSSessioneDocumento
+    qs = (EHSSessioneDocumento.objects
+          .filter(archiviato_il__isnull=True, esportazione__isnull=True, sessione__stato='COMPLETATA')
+          .filter(Q(tipo='presenze', sessione__presenze_caricate_il__isnull=False)
+                  | Q(tipo='attestati', sessione__attestati_caricati_il__isnull=False))
+          .select_related('sessione__corso', 'sessione__negozio'))
+    return [d for d in qs if d.file and d.file.storage.exists(d.file.name)]
+
+
+def _dimensione(documento):
+    try:
+        return documento.file.size
+    except (FileNotFoundError, OSError):
+        return 0
+
+
+def stato_archivio():
+    """Riepilogo per la pagina Archivio documenti EHS."""
+    from .models import EHSEsportazioneDocumenti, EHSSessioneDocumento
+    esportabili = _documenti_esportabili()
+    inizio_mese = timezone.localdate().replace(day=1)
+    in_sezioni_aperte = (EHSSessioneDocumento.objects
+                         .filter(archiviato_il__isnull=True, esportazione__isnull=True)
+                         .exclude(id__in=[d.id for d in esportabili]).count())
+    aperta = EHSEsportazioneDocumenti.objects.filter(svuotata_il__isnull=True).first()
+    return {
+        'da_archiviare': len(esportabili),
+        'dimensione': sum(_dimensione(d) for d in esportabili),
+        # Per il promemoria: documenti caricati prima del mese corrente ancora in Kollegas.
+        'mesi_precedenti': sum(1 for d in esportabili if timezone.localtime(d.caricato_il).date() < inizio_mese),
+        'in_sezioni_aperte': in_sezioni_aperte,
+        'esportazione_aperta': aperta,
+        'storico': list(EHSEsportazioneDocumenti.objects.filter(svuotata_il__isnull=False)[:24]),
+    }
+
+
+def crea_esportazione(utente):
+    """Raccoglie i documenti esportabili in una nuova esportazione (una alla volta)."""
+    from .models import EHSEsportazioneDocumenti, EHSSessioneDocumento
+    if not senza_limiti(utente):
+        raise TransizioneNonValida('Solo Admin e Admin EHS gestiscono l\'archivio documenti.')
+    aperta = EHSEsportazioneDocumenti.objects.filter(svuotata_il__isnull=True).first()
+    if aperta:
+        return aperta
+    documenti = _documenti_esportabili()
+    if not documenti:
+        raise TransizioneNonValida('Nessun documento da archiviare.')
+    with transaction.atomic():
+        esportazione = EHSEsportazioneDocumenti.objects.create(
+            creata_da=utente, numero_file=len(documenti), dimensione=sum(_dimensione(d) for d in documenti),
+        )
+        EHSSessioneDocumento.objects.filter(id__in=[d.id for d in documenti]).update(esportazione=esportazione)
+    return esportazione
+
+
+def _pulisci(nome):
+    vietati = '<>:"/|?*' + chr(92)
+    pulito = ''.join('_' if ch in vietati or ord(ch) < 32 else ch for ch in (nome or '')).strip(' .')
+    return pulito or 'senza_nome'
+
+
+def scrivi_zip_esportazione(esportazione, destinazione, utente):
+    """Scrive lo ZIP nel file-like `destinazione`, con cartelle
+    Negozio/Corso/AAAA-MM-GG (aula N)/Presenze|Attestati/<file>."""
+    import zipfile
+    if not senza_limiti(utente):
+        raise TransizioneNonValida('Solo Admin e Admin EHS gestiscono l\'archivio documenti.')
+    if esportazione.svuotata_il:
+        raise TransizioneNonValida('Esportazione già svuotata: i file non sono più in Kollegas.')
+    usati = set()
+    with zipfile.ZipFile(destinazione, 'w', zipfile.ZIP_DEFLATED) as z:
+        for d in esportazione.documenti.select_related('sessione__corso', 'sessione__negozio').order_by('id'):
+            s = d.sessione
+            giorno = giorno_aula(s) or timezone.localtime(d.caricato_il).date()
+            cartella = '/'.join([
+                _pulisci(s.negozio.nome), _pulisci(s.corso.nome),
+                f'{giorno:%Y-%m-%d} (aula {s.id})', 'Presenze' if d.tipo == 'presenze' else 'Attestati',
+            ])
+            nome = _pulisci(d.nome_originale or d.file.name.rsplit('/', 1)[-1])
+            percorso, base, n = f'{cartella}/{nome}', nome, 1
+            while percorso in usati:
+                n += 1
+                radice, punto, est = base.rpartition('.')
+                percorso = f'{cartella}/{radice} ({n}).{est}' if punto else f'{cartella}/{base} ({n})'
+            usati.add(percorso)
+            with d.file.open('rb') as f:
+                z.writestr(percorso, f.read())
+    esportazione.scaricata_il, esportazione.scaricata_da = timezone.now(), utente
+    esportazione.save(update_fields=['scaricata_il', 'scaricata_da'])
+
+
+def svuota_esportazione(esportazione, utente, conferma):
+    """Cancella da Kollegas il contenuto dei soli file inclusi nell'esportazione già
+    scaricata. Le righe restano, con la data di archiviazione."""
+    if not senza_limiti(utente):
+        raise TransizioneNonValida('Solo Admin e Admin EHS gestiscono l\'archivio documenti.')
+    if conferma != TESTO_CONFERMA_SVUOTA:
+        raise TransizioneNonValida(f'Per confermare digita {TESTO_CONFERMA_SVUOTA}.')
+    if esportazione.svuotata_il:
+        raise TransizioneNonValida('Esportazione già svuotata.')
+    if not esportazione.scaricata_il:
+        raise TransizioneNonValida('Scarica prima lo ZIP: si svuota solo ciò che è stato scaricato.')
+    with transaction.atomic():
+        now = timezone.now()
+        for d in esportazione.documenti.all():
+            if d.file:
+                d.file.storage.delete(d.file.name)
+            d.archiviato_il = now
+            d.save(update_fields=['archiviato_il'])
+        esportazione.svuotata_il, esportazione.svuotata_da = now, utente
+        esportazione.save(update_fields=['svuotata_il', 'svuotata_da'])
+    return esportazione

@@ -205,6 +205,13 @@ class EHSSessioneDocumento(models.Model):
         'users.User', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='ehs_documenti_caricati',
     )
+    # Archivio mensile: il documento entra in uno ZIP scaricato da Admin/Admin EHS;
+    # allo svuotamento il contenuto viene cancellato da Kollegas (resta solo la riga).
+    esportazione = models.ForeignKey(
+        'EHSEsportazioneDocumenti', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='documenti',
+    )
+    archiviato_il = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         verbose_name = 'Documento Sessione EHS'
@@ -213,6 +220,33 @@ class EHSSessioneDocumento(models.Model):
 
     def __str__(self):
         return self.nome_originale or self.file.name
+
+
+class EHSEsportazioneDocumenti(models.Model):
+    """Scarico mensile dei documenti EHS (ZIP) e successivo svuotamento da Kollegas.
+    Un'esportazione alla volta: finché non è svuotata, lo ZIP si può riscaricare."""
+    creata_il = models.DateTimeField(auto_now_add=True)
+    creata_da = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, related_name='ehs_esportazioni_create',
+    )
+    numero_file = models.PositiveIntegerField(default=0)
+    dimensione = models.PositiveBigIntegerField(default=0)
+    scaricata_il = models.DateTimeField(null=True, blank=True)
+    scaricata_da = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='ehs_esportazioni_scaricate',
+    )
+    svuotata_il = models.DateTimeField(null=True, blank=True)
+    svuotata_da = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='ehs_esportazioni_svuotate',
+    )
+
+    class Meta:
+        verbose_name = 'Esportazione documenti EHS'
+        verbose_name_plural = 'Esportazioni documenti EHS'
+        ordering = ['-creata_il']
+
+    def __str__(self):
+        return f'Esportazione {self.creata_il:%Y-%m-%d} ({self.numero_file} file)'
 
 
 class EHSPartecipante(models.Model):

@@ -160,9 +160,13 @@ class EHSSessioneDocumentoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = EHSSessioneDocumento
-        fields = ['id', 'tipo', 'nome_originale', 'caricato_il', 'disponibile']
+        fields = ['id', 'tipo', 'nome_originale', 'caricato_il', 'disponibile', 'archiviato_il']
 
     def get_disponibile(self, obj):
+        # Un documento archiviato (archivio mensile) non è più in Kollegas per scelta:
+        # in pagina si distingue dai file persi grazie ad archiviato_il.
+        if obj.archiviato_il:
+            return False
         return bool(obj.file) and obj.file.storage.exists(obj.file.name)
 
 

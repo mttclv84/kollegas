@@ -270,6 +270,54 @@ class EHSFlussiTest(TestCase):
         self.assertTrue(stato(self.f_rete))  # il fornitore dell'aula lo vede
         self.assertIsNone(stato(self.f_fuori))  # per gli altri fornitori l'aula è solo "Occupato"
 
+    def test_archivio_mensile_zip_e_svuota(self):
+        import io
+        import zipfile
+        from archivio.models import FileArchiviato
+        sessione = self._a_oggi(self._conferma(self._crea(), giorni=10))
+        services.chiudi_aula(sessione, {}, None, self.f_rete)
+        services.carica_documenti(sessione, self.f_rete, 'presenze', [SimpleUploadedFile('Registro.pdf', b'%PDF-reg')])
+        services.carica_documenti(sessione, self.f_rete, 'attestati', [SimpleUploadedFile('Att.pdf', b'%PDF-att')])
+        services.segna_sezione_completa(sessione, self.f_rete, 'presenze')  # attestati ancora aperta
+        url = '/api/ehs/archivio-documenti/'
+        self.assertEqual(self._client(self.f_rete).get(url).status_code, 403)
+        self.assertEqual(self._client(self.store_user).get(url).status_code, 403)
+        c = self._client(self.admin_ehs)
+        stato = c.get(url).json()
+        self.assertEqual((stato['da_archiviare'], stato['in_sezioni_aperte']), (1, 1))
+
+        esp = c.post(url).json()
+        self.assertEqual(esp['numero_file'], 1)
+        self.assertEqual(c.post(url).json()['id'], esp['id'])  # una alla volta
+        # svuotare prima di scaricare non è ammesso
+        self.assertEqual(c.post(f'{url}{esp["id"]}/svuota/', {'conferma': 'SVUOTA'}, format='json').status_code, 400)
+
+        r = c.get(f'{url}{esp["id"]}/zip/')
+        self.assertEqual(r.status_code, 200)
+        z = zipfile.ZipFile(io.BytesIO(b''.join(r.streaming_content)))
+        nomi = z.namelist()
+        self.assertEqual(len(nomi), 1)
+        self.assertTrue(nomi[0].startswith('Firenze/Antincendio/'), nomi)
+        self.assertTrue(nomi[0].endswith('/Presenze/Registro.pdf'), nomi)
+        self.assertEqual(z.read(nomi[0]), b'%PDF-reg')
+
+        # un documento caricato dopo lo scarico non viene toccato dallo svuotamento
+        services.segna_sezione_completa(sessione, self.f_rete, 'attestati')
+        self.assertEqual(c.post(f'{url}{esp["id"]}/svuota/', {'conferma': 'no'}, format='json').status_code, 400)
+        r = c.post(f'{url}{esp["id"]}/svuota/', {'conferma': 'SVUOTA'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(FileArchiviato.objects.count(), 1)  # resta solo l'attestato
+        docs = {d['tipo']: d for d in c.get(f'/api/ehs/sessioni/{sessione.id}/').json()['documenti']}
+        self.assertIsNotNone(docs['presenze']['archiviato_il'])
+        self.assertFalse(docs['presenze']['disponibile'])
+        self.assertTrue(docs['attestati']['disponibile'])
+        r = c.get(f'/api/ehs/registri/{sessione.id}/file/{docs["presenze"]["id"]}/')
+        self.assertEqual(r.status_code, 410)
+        self.assertIn('archiviato', r.json()['detail'])
+        stato = c.get(url).json()
+        self.assertEqual((stato['da_archiviare'], len(stato['storico'])), (1, 1))
+        self.assertIsNone(stato['esportazione_aperta'])
+
     def test_admin_ehs_riapre_sezione_completa(self):
         sessione = self._a_oggi(self._conferma(self._crea(), giorni=10))
         services.chiudi_aula(sessione, {}, None, self.f_rete)

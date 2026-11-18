@@ -26,6 +26,7 @@ from .models import (
     EHSAvviso,
     EHSConfigurazione,
     EHSCorso,
+    EHSEsportazioneDocumenti,
     EHSFormazione,
     EHSMansione,
     EHSNotificaDataProposta,
@@ -498,6 +499,69 @@ class EHSSezioneCompletaView(BaseEHSSessioneActionView):
         return self.esegui(request, pk, lambda s: services.segna_sezione_completa(s, request.user, tipo))
 
 
+def _esportazione_json(e):
+    if e is None:
+        return None
+    nome = lambda u: u.nome_completo if u else None
+    return {
+        'id': e.id, 'creata_il': e.creata_il, 'creata_da': nome(e.creata_da),
+        'numero_file': e.numero_file, 'dimensione': e.dimensione,
+        'scaricata_il': e.scaricata_il, 'scaricata_da': nome(e.scaricata_da),
+        'svuotata_il': e.svuotata_il, 'svuotata_da': nome(e.svuotata_da),
+    }
+
+
+class EHSArchivioDocumentiView(APIView):
+    """GET /ehs/archivio-documenti/ — riepilogo dell'archivio mensile (Admin / Admin EHS).
+    POST — prepara l'esportazione con i documenti da archiviare (o restituisce quella aperta)."""
+    permission_classes = [IsAdminEHS]
+
+    def get(self, request):
+        stato = services.stato_archivio()
+        stato['esportazione_aperta'] = _esportazione_json(stato['esportazione_aperta'])
+        stato['storico'] = [_esportazione_json(e) for e in stato['storico']]
+        return Response(stato)
+
+    def post(self, request):
+        try:
+            esportazione = services.crea_esportazione(request.user)
+        except TransizioneNonValida as e:
+            return Response({'detail': str(e)}, status=400)
+        return Response(_esportazione_json(esportazione))
+
+
+class EHSArchivioZipView(APIView):
+    """GET /ehs/archivio-documenti/<pk>/zip/ — scarica lo ZIP dell'esportazione."""
+    permission_classes = [IsAdminEHS]
+
+    def get(self, request, pk):
+        import tempfile
+        esportazione = get_object_or_404(EHSEsportazioneDocumenti, pk=pk)
+        tmp = tempfile.TemporaryFile()
+        try:
+            services.scrivi_zip_esportazione(esportazione, tmp, request.user)
+        except TransizioneNonValida as e:
+            tmp.close()
+            return Response({'detail': str(e)}, status=400)
+        tmp.seek(0)
+        nome = f'Kollegas_EHS_documenti_{timezone.localtime(esportazione.creata_il):%Y-%m-%d}.zip'
+        return FileResponse(tmp, as_attachment=True, filename=nome, content_type='application/zip')
+
+
+class EHSArchivioSvuotaView(APIView):
+    """POST /ehs/archivio-documenti/<pk>/svuota/ {conferma: 'SVUOTA'} — cancella da
+    Kollegas i file già scaricati nello ZIP."""
+    permission_classes = [IsAdminEHS]
+
+    def post(self, request, pk):
+        esportazione = get_object_or_404(EHSEsportazioneDocumenti, pk=pk)
+        try:
+            services.svuota_esportazione(esportazione, request.user, request.data.get('conferma'))
+        except TransizioneNonValida as e:
+            return Response({'detail': str(e)}, status=400)
+        return Response(_esportazione_json(esportazione))
+
+
 class EHSRiapriSezioneView(BaseEHSSessioneActionView):
     """PATCH /ehs/sessioni/<pk>/riapri-sezione/ {tipo} — Admin / Admin EHS riaprono una
     sezione completa per sostituire o aggiungere documenti."""
@@ -948,6 +1012,9 @@ class EHSRegistroFileView(APIView):
         if not doc:
             return Response(status=404)
         content_type = mimetypes.guess_type(doc.nome_originale or doc.file.name)[0] or 'application/octet-stream'
+        if doc.archiviato_il:
+            return Response({'detail': f'Documento archiviato il {timezone.localtime(doc.archiviato_il):%d/%m/%Y}: '
+                                       f"consultare l'archivio aziendale."}, status=410)
         try:
             contenuto = doc.file.open('rb')
         except FileNotFoundError:
