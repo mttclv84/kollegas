@@ -12,6 +12,12 @@ class EHSCorso(models.Model):
     scadenza_giorni = models.PositiveIntegerField(null=True, blank=True)
     # Durata del corso di aggiornamento che rinnova la validità (es. Preposti: 6 ore).
     ore_aggiornamento = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    # Corso di aggiornamento separato (es. "Aggiornamento Preposti"): quando è completato
+    # rinnova il corso indicato qui, con la scadenza prevista dall'aggiornamento stesso.
+    rinnova = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='aggiornamenti',
+    )
+
     class Meta:
         verbose_name = 'Corso EHS'
         verbose_name_plural = 'Corsi EHS'

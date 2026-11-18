@@ -1021,9 +1021,11 @@ def _ultime_formazioni_con_scadenza(negozio=None):
           .order_by('data'))
     if negozio is not None:
         qs = qs.filter(utente__store=negozio)
+    base = mappa_corsi_base()
     ultime = {}
     for f in qs:
-        ultime[(f.utente_id, f.corso_id)] = f  # ordinate per data: resta l'ultima
+        # ordinate per data: resta l'ultima; un aggiornamento rinnova il corso base
+        ultime[(f.utente_id, base.get(f.corso_id, f.corso_id))] = f
     return [f for f in ultime.values() if f.scadenza]
 
 
@@ -1039,11 +1041,13 @@ def scadenze_in_arrivo(negozio=None, giorni=GIORNI_ALERT_SCADENZA):
     if not in_scadenza:
         return []
 
-    # Rinnovo già pianificato: l'utente è iscritto a una sessione futura dello stesso corso.
-    pianificati = set(EHSPartecipante.objects.filter(
+    # Rinnovo già pianificato: l'utente è iscritto a una sessione futura dello stesso
+    # corso o del suo aggiornamento (confronto sul corso base).
+    base = mappa_corsi_base()
+    pianificati = {(u, base.get(c, c)) for u, c in EHSPartecipante.objects.filter(
         sessione__stato='CONFERMATA', sessione__data_confermata__gte=timezone.now(),
         utente_id__in={f.utente_id for f in in_scadenza},
-    ).values_list('utente_id', 'sessione__corso_id'))
+    ).values_list('utente_id', 'sessione__corso_id')}
 
     risultato = [
         {
@@ -1056,7 +1060,7 @@ def scadenze_in_arrivo(negozio=None, giorni=GIORNI_ALERT_SCADENZA):
             'corso_nome': f.corso.nome,
             'scadenza_formazione': f.scadenza,
             'giorni_mancanti': (f.scadenza - oggi).days,
-            'rinnovo_pianificato': (f.utente_id, f.corso_id) in pianificati,
+            'rinnovo_pianificato': (f.utente_id, base.get(f.corso_id, f.corso_id)) in pianificati,
         }
         for f in in_scadenza
     ]
@@ -1159,9 +1163,25 @@ def controlla_minimo_partecipanti(adesso=None):
 
 # --- Iscrizioni alle aule --------------------------------------------------------
 
+def mappa_corsi_base():
+    """{id corso di aggiornamento: id corso base che rinnova}. Nel registro un
+    aggiornamento completato vale come rinnovo del corso base (es. Aggiornamento
+    Preposti -> Preposti): stato e scadenza vengono dall'ultima formazione tra i due."""
+    from .models import EHSCorso
+    return dict(EHSCorso.objects.filter(rinnova__isnull=False).values_list('id', 'rinnova_id'))
+
+
+def corsi_famiglia(corso):
+    """Id del corso base e di tutti i suoi corsi di aggiornamento."""
+    from .models import EHSCorso
+    base = corso.rinnova_id or corso.id
+    return [base, *EHSCorso.objects.filter(rinnova_id=base).values_list('id', flat=True)]
+
+
 def ultima_formazione(utente, corso):
     from .models import EHSFormazione
-    return EHSFormazione.objects.filter(utente=utente, corso=corso).order_by('-data').first()
+    return (EHSFormazione.objects.filter(utente=utente, corso_id__in=corsi_famiglia(corso))
+            .order_by('-data').first())
 
 
 def rinnovabile_dal(formazione):
@@ -1275,12 +1295,14 @@ def calcola_stati(persone):
         else:
             per_mansione.setdefault(o.mansione_id, {})[o.corso_id] = o.facoltativo
 
+    base = mappa_corsi_base()
     ultime = {}
     for f in EHSFormazione.objects.filter(utente_id__in=ids).order_by('data'):
-        ultime[(f.utente_id, f.corso_id)] = f  # ordinate per data: resta l'ultima
-    iscritte = set(EHSPartecipante.objects.filter(
+        # ordinate per data: resta l'ultima; un aggiornamento conta sul corso base
+        ultime[(f.utente_id, base.get(f.corso_id, f.corso_id))] = f
+    iscritte = {(u, base.get(c, c)) for u, c in EHSPartecipante.objects.filter(
         utente_id__in=ids, sessione__stato='CONFERMATA', completato=False,
-    ).values_list('utente_id', 'sessione__corso_id'))
+    ).values_list('utente_id', 'sessione__corso_id')}
 
     oggi = timezone.now().date()
     soglia = oggi + timedelta(days=GIORNI_ALERT_SCADENZA)

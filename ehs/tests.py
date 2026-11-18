@@ -499,6 +499,32 @@ class EHSFormazioneObbligatoriaTest(TestCase):
         self.assertEqual(f.data, timezone.localtime(sessione.data_confermata).date())
         self.assertIsNotNone(f.scadenza)
 
+    def test_aggiornamento_rinnova_il_corso_base(self):
+        from .models import EHSFormazione
+        oggi = timezone.now().date()
+        services.imposta_cella_matrice(self.corso, ruolo=self.tm, stato='obbligatorio')
+        agg = EHSCorso.objects.create(codice='AGGPREP', nome='Aggiornamento Preposti', durata_ore=6,
+                                      scadenza_giorni=1825, rinnova=self.corso)
+        EHSFormazione.objects.create(utente=self.tm_user, corso=self.corso, data=oggi - timedelta(days=800),
+                                     fonte='manuale')
+        self.assertEqual(services.calcola_stati([self.tm_user])[self.tm_user.id][self.corso.id]['stato'], 'scaduta')
+        self.assertEqual(len(services.scadenze_in_arrivo()), 1)
+
+        f = EHSFormazione.objects.create(utente=self.tm_user, corso=agg, data=oggi, fonte='manuale')
+        stato = services.calcola_stati([self.tm_user])[self.tm_user.id][self.corso.id]
+        # torna verde con la scadenza dell'aggiornamento
+        self.assertEqual((stato['stato'], stato['scadenza']), ('valida', oggi + timedelta(days=1825)))
+        self.assertEqual(services.scadenze_in_arrivo(), [])
+        self.assertEqual(services.ultima_formazione(self.tm_user, self.corso), f)
+        self.assertEqual(services.ultima_formazione(self.tm_user, agg), f)
+
+    def test_rinnova_non_concatenabile(self):
+        agg = EHSCorso.objects.create(codice='AGGPREP', nome='Aggiornamento Preposti', durata_ore=6,
+                                      rinnova=self.corso)
+        url = f'/api/ehs/corsi/{self.corso.id}/'
+        r = self._client(self.admin_ehs).patch(url, {'rinnova': agg.id}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+
     def test_matrice_modificabile_solo_da_admin_ehs(self):
         body = {'corso': self.corso.id, 'ruolo': self.tm.id, 'stato': 'obbligatorio'}
         self.assertEqual(self._client(self.area).put('/api/ehs/matrice/', body, format='json').status_code, 403)

@@ -51,12 +51,13 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
     In scrittura `offerte` sostituisce interamente gli abbinamenti esistenti."""
     offerte = EHSOffertaCorsoSerializer(many=True, required=False)
     fornitori_nomi = serializers.SerializerMethodField()
+    rinnova_nome = serializers.CharField(source='rinnova.nome', read_only=True, default=None)
 
     class Meta:
         model = EHSCorso
         fields = [
             'id', 'codice', 'nome', 'durata_ore', 'descrizione', 'attivo', 'scadenza_giorni',
-            'ore_aggiornamento', 'offerte', 'fornitori_nomi',
+            'ore_aggiornamento', 'rinnova', 'rinnova_nome', 'offerte', 'fornitori_nomi',
         ]
         # Il codice è generato automaticamente alla creazione (EHS + 4 cifre random) e
         # non è mai modificabile da input client, né in creazione né in modifica.
@@ -69,6 +70,21 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
 
     def get_fornitori_nomi(self, obj):
         return [o.fornitore.fornitore_ragione_sociale or o.fornitore.nome_completo for o in obj.offerte.all()]
+
+    def validate_rinnova(self, value):
+        """Un solo livello: l'aggiornamento rinnova un corso base, che a sua volta non
+        può essere l'aggiornamento di un altro né il corso stesso."""
+        if value is None:
+            return value
+        if self.instance and value.pk == self.instance.pk:
+            raise serializers.ValidationError('Un corso non può rinnovare sé stesso.')
+        if value.rinnova_id:
+            raise serializers.ValidationError(
+                f'{value.nome} è già un aggiornamento di {value.rinnova.nome}: scegli il corso base.')
+        if self.instance and self.instance.aggiornamenti.exists():
+            raise serializers.ValidationError(
+                'Questo corso ha già dei corsi di aggiornamento collegati: non può essere a sua volta un aggiornamento.')
+        return value
 
     def validate_offerte(self, value):
         # Un corso senza fornitori è ammesso (es. moduli e-learning da registrare a mano):
