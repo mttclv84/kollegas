@@ -19,7 +19,7 @@ from stores.models import Store
 from django.contrib.auth import get_user_model
 
 from users.models import Role
-from users.permissions import IsAdminEHS, IsAdminOrHOEHS
+from users.permissions import IsAdmin, IsAdminEHS, IsAdminOrHOEHS
 
 from . import services
 from .models import (
@@ -106,7 +106,13 @@ class EHSCorsoListCreateView(generics.ListCreateAPIView):
 class EHSCorsoDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = EHSCorsoSerializer
     queryset = EHSCorso.objects.prefetch_related('offerte__fornitore', 'offerte__negozi')
-    permission_classes = [IsAdminOrHOEHS]
+
+    def get_permissions(self):
+        # Disattivare e riattivare un corso è riservato all'Admin generale: i corsi
+        # disattivati finiscono in Disattivati > Corsi disattivati.
+        if self.request.method == 'DELETE' or 'attivo' in self.request.data:
+            return [IsAdmin()]
+        return [IsAdminOrHOEHS()]
 
     def perform_destroy(self, instance):
         # Non elimina fisicamente: potrebbe essere referenziato da sessioni storiche.

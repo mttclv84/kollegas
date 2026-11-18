@@ -19,6 +19,29 @@ class CatalogoCompletoTest(TestCase):
         self.assertEqual(len(c.get('/api/attivita/').json()), attive)
 
 
+class DisattivazioneAttivitaTest(TestCase):
+    def test_elimina_disattiva_solo_admin_e_conserva_lo_storico(self):
+        from datetime import date, time
+        from .models import Evento, Host
+        att = AttivitaCatalogo.objects.create(nome='Da disattivare', tipologia='ld')
+        evento = Evento.objects.create(data=date(2026, 1, 10), ora_inizio=time(9), ora_fine=time(10), attivita=att,
+                                       host=Host.objects.get_or_create(descrizione='T', defaults={'posizione': 'interno'})[0])
+        ho, admin = APIClient(), APIClient()
+        ho.force_authenticate(User.objects.create_user(email='h@x.it', password='x', cognome='H', nome='H', livello_accesso='ho'))
+        admin.force_authenticate(User.objects.create_user(email='a@x.it', password='x', cognome='A', nome='A', livello_accesso='admin'))
+        self.assertEqual(ho.delete(f'/api/attivita/{att.id}/').status_code, 403)
+        self.assertEqual(admin.delete(f'/api/attivita/{att.id}/').status_code, 204)
+        att.refresh_from_db()
+        self.assertFalse(att.is_active)
+        self.assertTrue(Evento.objects.filter(pk=evento.pk).exists())
+        ids = lambda url: [a['id'] for a in admin.get(url).json()]
+        self.assertNotIn(att.id, ids('/api/attivita/'))
+        self.assertIn(att.id, ids('/api/attivita/?tutte=1'))
+        self.assertEqual(ids('/api/attivita/?disattivate=1'), [att.id])
+        self.assertEqual(ho.patch(f'/api/attivita/{att.id}/', {'is_active': True}, format='json').status_code, 403)
+        self.assertEqual(admin.patch(f'/api/attivita/{att.id}/', {'is_active': True}, format='json').status_code, 200)
+
+
 class PausaPranzoTest(TestCase):
     def _ore(self, inizio, fine):
         from datetime import date, time

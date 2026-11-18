@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from rest_framework import serializers as drf_serializers
 from .models import Host, AttivitaCatalogo, Evento, EccezioneCalendario, NotificaEvento
 from .serializers import HostSerializer, AttivitaCatalogoSerializer, EventoListSerializer, EventoDetailSerializer
-from users.permissions import IsAdminOrHO, IsAdminOrHOEHS, IsAdminOrHOOrArea, IsAdminOrHOOrAreaEHS
+from users.permissions import IsAdmin, IsAdminOrHO,IsAdminOrHOEHS, IsAdminOrHOOrArea, IsAdminOrHOOrAreaEHS
 
 
 class HostListCreateView(generics.ListCreateAPIView):
@@ -32,9 +32,20 @@ class HostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class AttivitaCatalogoListCreateView(generics.ListCreateAPIView):
+    """Catalogo attività: di default solo quelle attive (tendine, nuovi eventi).
+    ?tutte=1 include le disattivate (filtri di Stats ed Elenco Attività: lo storico
+    resta consultabile); ?disattivate=1 solo le disattivate (sezione Corsi disattivati)."""
     serializer_class = AttivitaCatalogoSerializer
     pagination_class = None  # elenco completo: oltre 50 voci la paginazione nascondeva attività
-    queryset = AttivitaCatalogo.objects.filter(is_active=True).prefetch_related('ruoli_destinatari')
+
+    def get_queryset(self):
+        qs = AttivitaCatalogo.objects.prefetch_related('ruoli_destinatari')
+        params = self.request.query_params
+        if params.get('disattivate'):
+            return qs.filter(is_active=False)
+        if params.get('tutte'):
+            return qs
+        return qs.filter(is_active=True)
 
     def get_permissions(self):
         if self.request.method == 'GET':
@@ -43,13 +54,21 @@ class AttivitaCatalogoListCreateView(generics.ListCreateAPIView):
 
 
 class AttivitaCatalogoDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """DELETE non elimina: disattiva l'attività (solo Admin). Eventi, iscrizioni e
+    statistiche già registrati restano intatti; si riattiva con PATCH is_active=true."""
     serializer_class = AttivitaCatalogoSerializer
     queryset = AttivitaCatalogo.objects.all()
 
     def get_permissions(self):
         if self.request.method == 'GET':
             return [IsAuthenticated()]
+        if self.request.method == 'DELETE' or 'is_active' in self.request.data:
+            return [IsAdmin()]
         return [IsAdminOrHOOrArea()]
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=['is_active'])
 
 
 class EventoListCreateView(generics.ListCreateAPIView):
