@@ -1,9 +1,8 @@
 from django.contrib import admin
 from django.urls import path, include
-from django.conf import settings
-from django.conf.urls.static import static
 from rest_framework_simplejwt.views import TokenRefreshView
 from users.views import CustomTokenObtainPairView, LogoutView
+from archivio.views import servi_media
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -15,4 +14,6 @@ urlpatterns = [
     path('api/', include('events.urls')),
     path('api/', include('participants.urls')),
     path('api/', include('ehs.urls')),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    # File caricati (archiviati nel database): pubblici solo i percorsi ammessi, es. foto.
+    path('media/<path:nome>', servi_media, name='media'),
+]

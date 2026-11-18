@@ -24,6 +24,7 @@ urlpatterns = [
     path('ehs/sessioni/<int:pk>/attestati-caricati/', views.EHSAttestatiCaricatiView.as_view(), name='ehs-attestati-caricati'),
     path('ehs/sessioni/<int:pk>/documenti/', views.EHSDocumentiView.as_view(), name='ehs-documenti'),
     path('ehs/sessioni/<int:pk>/documenti/<int:documento_id>/', views.EHSDocumentiView.as_view(), name='ehs-documento-delete'),
+    path('ehs/sessioni/<int:pk>/riapri-sezione/', views.EHSRiapriSezioneView.as_view(), name='ehs-riapri-sezione'),
     path('ehs/sessioni/<int:pk>/sezione-completa/', views.EHSSezioneCompletaView.as_view(), name='ehs-sezione-completa'),
     path('ehs/aula-fornitore/', views.EHSAulaFornitoreView.as_view(), name='ehs-aula-fornitore'),
     path('ehs/calendario/', views.EHSCalendarioView.as_view(), name='ehs-calendario'),

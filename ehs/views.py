@@ -498,6 +498,14 @@ class EHSSezioneCompletaView(BaseEHSSessioneActionView):
         return self.esegui(request, pk, lambda s: services.segna_sezione_completa(s, request.user, tipo))
 
 
+class EHSRiapriSezioneView(BaseEHSSessioneActionView):
+    """PATCH /ehs/sessioni/<pk>/riapri-sezione/ {tipo} — Admin / Admin EHS riaprono una
+    sezione completa per sostituire o aggiungere documenti."""
+    def patch(self, request, pk):
+        tipo = request.data.get('tipo')
+        return self.esegui(request, pk, lambda s: services.riapri_sezione(s, request.user, tipo))
+
+
 class EHSAulaFornitoreView(APIView):
     """GET /ehs/aula-fornitore/ — corsi erogati dal fornitore con i negozi serviti.
     POST — il fornitore crea in autonomia un'aula, subito confermata sul calendario
@@ -940,7 +948,12 @@ class EHSRegistroFileView(APIView):
         if not doc:
             return Response(status=404)
         content_type = mimetypes.guess_type(doc.nome_originale or doc.file.name)[0] or 'application/octet-stream'
-        return FileResponse(doc.file.open('rb'), content_type=content_type)
+        try:
+            contenuto = doc.file.open('rb')
+        except FileNotFoundError:
+            # File caricato prima dell'archivio nel database: è andato perso con un deploy.
+            return Response({'detail': 'File non più disponibile sul server: va ricaricato.'}, status=410)
+        return FileResponse(contenuto, content_type=content_type)
 
 
 class EHSScadenzeView(APIView):

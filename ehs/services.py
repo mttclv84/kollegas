@@ -925,6 +925,29 @@ def segna_sezione_completa(sessione, utente, tipo):
     return sessione
 
 
+def riapri_sezione(sessione, utente, tipo):
+    """Admin / Admin EHS riaprono una sezione già segnata come completa (la V torna
+    grigia), per sostituire o aggiungere documenti, anche oltre il termine."""
+    if not senza_limiti(utente):
+        raise TransizioneNonValida('Solo Admin e Admin EHS possono riaprire una sezione.')
+    if tipo not in SEZIONI_DOCUMENTI:
+        raise TransizioneNonValida('Sezione documenti non valida.')
+    if sessione.stato != 'COMPLETATA':
+        raise TransizioneNonValida("La sezione si riapre solo su un'aula completata.")
+    if not sezione_completa(sessione, tipo):
+        raise TransizioneNonValida('La sezione è già aperta.')
+    with transaction.atomic():
+        if tipo == 'presenze':
+            sessione.presenze_caricate_il, sessione.presenze_caricate_da = None, None
+            campi = ['presenze_caricate_il', 'presenze_caricate_da', 'aggiornata_il']
+        else:
+            sessione.attestati_caricati_il, sessione.attestati_caricati_da = None, None
+            campi = ['attestati_caricati_il', 'attestati_caricati_da', 'aggiornata_il']
+        sessione.save(update_fields=campi)
+        _log(sessione, sessione.stato, sessione.stato, utente, f'{tipo.capitalize()}: sezione riaperta')
+    return sessione
+
+
 def segna_attestati_caricati(sessione, utente):
     """Compatibilità con il vecchio endpoint: equivale a completare la sezione Attestati."""
     return segna_sezione_completa(sessione, utente, 'attestati')

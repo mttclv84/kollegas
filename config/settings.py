@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     'events',
     'participants',
     'ehs',
+    'archivio',
     'django_filters',
 ]
 
@@ -93,7 +94,13 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+# I file caricati (registri, attestati, foto, documenti utente) vanno nel database:
+# su Render il disco del server si azzera a ogni deploy. Lo storage dei file statici
+# resta quello standard (l'impostazione STATICFILES_STORAGE non esiste più da Django 5.1).
+STORAGES = {
+    'default': {'BACKEND': 'archivio.storage.DatabaseStorage'},
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+}
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 

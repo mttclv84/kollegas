@@ -924,7 +924,11 @@ class UserDocDetailView(APIView):
             return Response({'detail': 'Non trovato.'}, status=404)
         if not self._can_access(request, doc):
             return Response({'detail': 'Non autorizzato.'}, status=403)
-        response = FileResponse(doc.file.open('rb'), content_type='application/pdf')
+        try:
+            contenuto = doc.file.open('rb')
+        except FileNotFoundError:
+            return Response({'detail': 'File non più disponibile sul server: va ricaricato.'}, status=410)
+        response = FileResponse(contenuto, content_type='application/pdf')
         response['Content-Disposition'] = f'inline; filename="{doc.nome_file}"'
         return response
 

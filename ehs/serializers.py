@@ -154,9 +154,16 @@ class EHSPartecipanteSerializer(serializers.ModelSerializer):
 
 
 class EHSSessioneDocumentoSerializer(serializers.ModelSerializer):
+    # False se il contenuto non c'è più (file caricati prima dell'archivio nel
+    # database, persi con un deploy): va ricaricato.
+    disponibile = serializers.SerializerMethodField()
+
     class Meta:
         model = EHSSessioneDocumento
-        fields = ['id', 'tipo', 'nome_originale', 'caricato_il']
+        fields = ['id', 'tipo', 'nome_originale', 'caricato_il', 'disponibile']
+
+    def get_disponibile(self, obj):
+        return bool(obj.file) and obj.file.storage.exists(obj.file.name)
 
 
 class EHSSessioneLogSerializer(serializers.ModelSerializer):

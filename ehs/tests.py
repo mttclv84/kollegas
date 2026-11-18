@@ -256,6 +256,30 @@ class EHSFlussiTest(TestCase):
         for d in sessione.documenti.all():
             d.file.delete(save=False)
 
+    def test_admin_ehs_riapre_sezione_completa(self):
+        sessione = self._a_oggi(self._conferma(self._crea(), giorni=10))
+        services.chiudi_aula(sessione, {}, None, self.f_rete)
+        services.carica_documenti(sessione, self.f_rete, 'presenze', [SimpleUploadedFile('r.pdf', b'%PDF')])
+        services.segna_sezione_completa(sessione, self.f_rete, 'presenze')
+        url = f'/api/ehs/sessioni/{sessione.id}/riapri-sezione/'
+        self.assertEqual(self._client(self.f_rete).patch(url, {'tipo': 'presenze'}, format='json').status_code, 403)
+        r = self._client(self.admin_ehs).patch(url, {'tipo': 'presenze'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIsNone(r.json()['presenze_caricate_il'])
+        self.assertTrue(r.json()['documenti'][0]['disponibile'])
+        # file del documento leggibile dall'endpoint autenticato
+        doc_id = r.json()['documenti'][0]['id']
+        r = self._client(self.admin_ehs).get(f'/api/ehs/registri/{sessione.id}/file/{doc_id}/')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(b''.join(r.streaming_content), b'%PDF')
+        # contenuto perso (vecchio file su disco): 410 e disponibile=False
+        from archivio.models import FileArchiviato
+        FileArchiviato.objects.all().delete()
+        r = self._client(self.admin_ehs).get(f'/api/ehs/registri/{sessione.id}/file/{doc_id}/')
+        self.assertEqual(r.status_code, 410)
+        r = self._client(self.admin_ehs).get(f'/api/ehs/sessioni/{sessione.id}/')
+        self.assertFalse(r.json()['documenti'][0]['disponibile'])
+
     def test_caricamento_documenti_entro_45_giorni(self):
         sessione = self._a_oggi(self._conferma(self._crea(), giorni=10))
         services.chiudi_aula(sessione, {}, None, self.f_rete)
