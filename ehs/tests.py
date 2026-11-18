@@ -98,6 +98,10 @@ class EHSFlussiTest(TestCase):
         self._crea()
         r = self._client(self.admin_ehs).delete(f'/api/ehs/fornitori/{self.f_rete.id}/', corpo, format='json')
         self.assertEqual(r.status_code, 400)
+        # il messaggio elenca quali formazioni bloccano
+        self.assertEqual(len(r.json()['formazioni_in_corso']), 1)
+        self.assertEqual(r.json()['formazioni_in_corso'][0]['corso'], 'Antincendio')
+        self.assertIn('Antincendio — Firenze', r.json()['detail'])
         self.assertEqual(self._client(self.admin_ehs).delete(url, corpo, format='json').status_code, 204)
         self.assertFalse(User.objects.filter(pk=self.f_fuori.id).exists())
 

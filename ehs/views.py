@@ -730,12 +730,26 @@ class EHSFornitoreDetailView(APIView):
             return Response({'detail': 'Solo Admin e Admin EHS possono eliminare un fornitore.'}, status=403)
         if (request.data.get('conferma') or '').strip() != TESTO_CONFERMA_ELIMINAZIONE:
             return Response({'detail': f'Per confermare digita {TESTO_CONFERMA_ELIMINAZIONE}.'}, status=400)
-        in_corso = EHSSessione.objects.filter(
+        in_corso = list(EHSSessione.objects.filter(
             Q(fornitore=fornitore) | Q(fornitore_richiesto=fornitore),
-        ).exclude(stato__in=('COMPLETATA', 'ANNULLATA', 'RIFIUTATA')).count()
+        ).exclude(stato__in=('COMPLETATA', 'ANNULLATA', 'RIFIUTATA'))
+            .select_related('corso', 'negozio').order_by('data_confermata', 'creata_il'))
         if in_corso:
-            return Response({'detail': f'Il fornitore ha ancora {in_corso} formazioni in corso: '
-                                       'eliminale o annullale prima di cancellarlo.'}, status=400)
+            # Elenca quali sono, così si trovano subito in EHS Calendar & Richieste.
+            def descrivi(s):
+                data = s.data_confermata or s.data_proposta
+                quando = timezone.localtime(data).strftime('%d/%m/%Y') if data else 'senza data'
+                return f'• {s.corso.nome} — {s.negozio.nome} — {quando} ({s.get_stato_display()}, aula n. {s.id})'
+            elenco = '\n'.join(descrivi(s) for s in in_corso)
+            return Response({
+                'detail': f'Il fornitore ha ancora {len(in_corso)} formazioni in corso: annullale (o eliminale) '
+                          f'da EHS Calendar & Richieste prima di cancellarlo.\n{elenco}',
+                'formazioni_in_corso': [
+                    {'id': s.id, 'corso': s.corso.nome, 'negozio': s.negozio.nome, 'stato': s.stato,
+                     'stato_label': s.get_stato_display(), 'data': s.data_confermata or s.data_proposta}
+                    for s in in_corso
+                ],
+            }, status=400)
         try:
             with transaction.atomic():
                 fornitore.ehs_offerte.all().delete()
