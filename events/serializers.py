@@ -29,6 +29,7 @@ class EventoListSerializer(serializers.ModelSerializer):
     location_display = serializers.ReadOnlyField()
     iscritti_count = serializers.SerializerMethodField()
     posti_disponibili = serializers.ReadOnlyField()
+    presenze_complete = serializers.SerializerMethodField()
     ehs_corso_nome = serializers.SerializerMethodField()
     ehs_negozio_codice = serializers.SerializerMethodField()
 
@@ -40,12 +41,19 @@ class EventoListSerializer(serializers.ModelSerializer):
             'host', 'host_nome', 'host_tipo',
             'location_store', 'location_esterna', 'location_display',
             'max_partecipanti', 'modalita_partecipazione',
-            'iscritti_count', 'posti_disponibili',
+            'iscritti_count', 'posti_disponibili', 'presenze_complete',
             'is_ehs', 'ehs_corso_nome', 'ehs_negozio_codice',
         ]
 
     def get_iscritti_count(self, obj):
         return obj.iscrizioni.count()
+
+    def get_presenze_complete(self, obj):
+        """True quando ogni iscritto è segnato presente o assente: sul calendario il
+        pallino dell'attività diventa un rettangolino nero. Usa le iscrizioni già
+        precaricate dalla lista (nessuna query in più)."""
+        iscrizioni = list(obj.iscrizioni.all())
+        return bool(iscrizioni) and all(i.stato in ('partecipato', 'assente') for i in iscrizioni)
 
     def get_ehs_corso_nome(self, obj):
         # Sul calendario principale mostriamo solo il nome del corso EHS

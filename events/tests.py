@@ -42,6 +42,34 @@ class DisattivazioneAttivitaTest(TestCase):
         self.assertEqual(admin.patch(f'/api/attivita/{att.id}/', {'is_active': True}, format='json').status_code, 200)
 
 
+class PresenzeCompleteTest(TestCase):
+    def test_presenze_complete_quando_tutti_presenti_o_assenti(self):
+        from datetime import date, time
+        from participants.models import Iscrizione
+        from .models import Evento, Host
+        evento = Evento.objects.create(
+            data=date(2026, 1, 10), ora_inizio=time(9), ora_fine=time(10),
+            attivita=AttivitaCatalogo.objects.create(nome='Corso', tipologia='ld'),
+            host=Host.objects.get_or_create(descrizione='T', defaults={'posizione': 'interno'})[0])
+        c = APIClient()
+        c.force_authenticate(User.objects.create_user(email='a@x.it', password='x', cognome='A', nome='A',
+                                                      livello_accesso='admin'))
+        def stato():
+            dati = c.get('/api/eventi/', {'data_da': '2026-01-01', 'data_a': '2026-01-31'}).json()
+            dati = dati['results'] if isinstance(dati, dict) else dati
+            return next(e for e in dati if e['id'] == evento.id)['presenze_complete']
+        self.assertFalse(stato())  # nessun iscritto
+        u1 = User.objects.create_user(email='u1@x.it', password='x', cognome='U', nome='1')
+        u2 = User.objects.create_user(email='u2@x.it', password='x', cognome='U', nome='2')
+        i1 = Iscrizione.objects.create(evento=evento, user=u1, stato='partecipato')
+        Iscrizione.objects.create(evento=evento, user=u2, stato='iscritto')
+        self.assertFalse(stato())
+        Iscrizione.objects.filter(user=u2).update(stato='assente')
+        self.assertTrue(stato())
+        i1.delete()
+        self.assertTrue(stato())
+
+
 class PausaPranzoTest(TestCase):
     def _ore(self, inizio, fine):
         from datetime import date, time
