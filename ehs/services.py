@@ -395,10 +395,24 @@ def decidi_eccezione(sessione, admin, approva, nota=''):
 # --- Negoziazione data --------------------------------------------------------
 
 def minimo_partecipanti(sessione):
+    # Le formazioni online si svolgono a prescindere dal numero di iscritti: nessun
+    # minimo, quindi nessun avviso e nessun annullamento automatico.
+    if sessione.modalita == 'ONLINE':
+        return 0
     return max(PARTECIPANTI_MINIMI, sessione.partecipanti_min or 0)
 
 
-def _valida_min_max(partecipanti_min, partecipanti_max):
+def _valida_min_max(partecipanti_min, partecipanti_max, online=False):
+    """Minimo (almeno PARTECIPANTI_MINIMI) e massimo. Online il minimo non c'è: si
+    indica solo il massimo e il minimo salvato è vuoto."""
+    if online:
+        try:
+            massimo = int(partecipanti_max)
+        except (TypeError, ValueError):
+            raise TransizioneNonValida('Indica il numero massimo di partecipanti.')
+        if massimo < 1:
+            raise TransizioneNonValida('Il massimo di partecipanti deve essere almeno 1.')
+        return None, massimo
     try:
         minimo, massimo = int(partecipanti_min), int(partecipanti_max)
     except (TypeError, ValueError):
@@ -430,7 +444,8 @@ def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telef
         raise TransizioneNonValida(f'Non è possibile proporre una data dallo stato {sessione.stato}.')
     if not docente_nome or not docente_telefono:
         raise TransizioneNonValida('Nome e telefono del docente sono obbligatori.')
-    sessione.partecipanti_min, sessione.partecipanti_max = _valida_min_max(partecipanti_min, partecipanti_max)
+    online = (modalita or sessione.modalita) == 'ONLINE'
+    sessione.partecipanti_min, sessione.partecipanti_max = _valida_min_max(partecipanti_min, partecipanti_max, online)
     _valida_mezzora(data_proposta, 'Data proposta')
     if modalita is not None:
         if modalita not in ('PRESENZA', 'ONLINE'):
@@ -451,7 +466,7 @@ def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telef
                 sessione.fornitore = fornitore
             _conferma_sessione(sessione, fornitore,
                                f'Fornitore ha confermato la data chiesta dallo store — docente: {docente_nome} — '
-                               f'partecipanti min {sessione.partecipanti_min}, max {sessione.partecipanti_max}',
+                               f'partecipanti min {sessione.partecipanti_min or 'nessuno (online)'}, max {sessione.partecipanti_max}',
                                notifica_lato='store')
             return sessione
         stato_precedente = sessione.stato
@@ -467,7 +482,7 @@ def proponi_data(sessione, fornitore, data_proposta, docente_nome, docente_telef
         sessione.save()
         _log(sessione, stato_precedente, sessione.stato, fornitore,
              f'Data proposta: {data_proposta} — docente: {docente_nome} — '
-             f'partecipanti min {sessione.partecipanti_min}, max {sessione.partecipanti_max}')
+             f'partecipanti min {sessione.partecipanti_min or 'nessuno (online)'}, max {sessione.partecipanti_max}')
         _notifica_data_proposta(sessione)
     return sessione
 
@@ -1004,7 +1019,7 @@ def crea_aula_fornitore(fornitore, corso, negozio, data, docente_nome, docente_t
     docente_nome, docente_telefono = (docente_nome or '').strip(), (docente_telefono or '').strip()
     if not docente_nome or not docente_telefono:
         raise TransizioneNonValida('Nome e telefono del docente sono obbligatori.')
-    minimo, massimo = _valida_min_max(partecipanti_min, partecipanti_max)
+    minimo, massimo = _valida_min_max(partecipanti_min, partecipanti_max, modalita == 'ONLINE')
     if modalita not in ('PRESENZA', 'ONLINE'):
         raise TransizioneNonValida('Indica se la formazione sarà in presenza o online.')
     link_online = (link_online or '').strip()
@@ -1182,6 +1197,7 @@ def controlla_minimo_partecipanti(adesso=None):
     oggi = timezone.localtime(adesso).date()
     avvisate = annullate = 0
     sessioni = (EHSSessione.objects.filter(stato='CONFERMATA', data_confermata__gt=adesso)
+                .exclude(modalita='ONLINE')  # online: nessun minimo
                 .select_related('corso', 'negozio', 'fornitore', 'calendario_evento'))
     for sessione in sessioni:
         iscritti = sessione.partecipanti.count()

@@ -169,6 +169,26 @@ class EHSFlussiTest(TestCase):
         self.assertTrue(email_store)
         self.assertIn('https://teams.microsoft.com/l/abc', email_store[0].body)
 
+    def test_online_senza_minimo_partecipanti(self):
+        sessione = self._crea(modalita='ONLINE')
+        # online basta il massimo
+        services.proponi_data(sessione, self.f_rete, _prossima_mezzora(3), 'Doc', '333',
+                              link_online='https://teams.microsoft.com/l/x', partecipanti_max=10, modalita='ONLINE')
+        services.rispondi_data(sessione, self.store_user, accetta=True)
+        sessione.refresh_from_db()
+        self.assertEqual((sessione.partecipanti_min, services.minimo_partecipanti(sessione)), (None, 0))
+        # nessun iscritto, a 3 giorni dalla data: nessun avviso e nessun annullamento
+        self.assertEqual(services.controlla_minimo_partecipanti(), (0, 0))
+        self.assertEqual(services.controlla_minimo_partecipanti(timezone.now() + timedelta(days=1)), (0, 0))
+        sessione.refresh_from_db()
+        self.assertEqual(sessione.stato, 'CONFERMATA')
+        r = self._client(self.admin_ehs).get(f'/api/ehs/sessioni/{sessione.id}/').json()
+        self.assertEqual((r['minimo_effettivo'], r['sotto_minimo']), (0, False))
+        # in presenza il minimo resta obbligatorio
+        altra = self._crea()
+        with self.assertRaises(TransizioneNonValida):
+            services.proponi_data(altra, self.f_rete, _prossima_mezzora(10), 'Doc', '333', partecipanti_max=10)
+
     def test_evento_calendario_in_ora_locale(self):
         sessione = self._conferma(self._crea())
         locale = timezone.localtime(sessione.data_confermata)

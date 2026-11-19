@@ -93,8 +93,12 @@ class EventoDetailSerializer(serializers.ModelSerializer):
         read_only_fields = ['ore_totali', 'created_by', 'created_at', 'updated_at']
 
     def get_ehs_partecipanti_min(self, obj):
+        # Minimo effettivo dell'aula EHS (0 = online, nessun minimo).
         sessione = getattr(obj, 'ehs_sessione', None)
-        return sessione.partecipanti_min if sessione else None
+        if not sessione:
+            return None
+        from ehs.services import minimo_partecipanti
+        return minimo_partecipanti(sessione)
 
     def get_ehs_corso_id(self, obj):
         sessione = getattr(obj, 'ehs_sessione', None)
