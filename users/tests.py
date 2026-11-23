@@ -118,6 +118,20 @@ class HOSolaVisioneEHSTest(TestCase):
         self.c.delete('/api/iscrizioni/assenti/')
         self.assertTrue(Iscrizione.objects.filter(pk=self.iscrizione_ehs.pk).exists())
 
+    def test_archivio_e_richieste_ehs_in_sola_visione(self):
+        from participants.models import RichiestaCancellazione
+        self.assertEqual(self.c.get('/api/ehs/archivio-documenti/').status_code, 200)
+        self.assertEqual(self.c.post('/api/ehs/archivio-documenti/').status_code, 403)
+        self.assertEqual(self.c.get('/api/ehs/archivio-documenti/1/zip/').status_code, 403)
+        self.assertEqual(self.c.post('/api/ehs/archivio-documenti/1/svuota/', {}, format='json').status_code, 403)
+        self.assertEqual(self.c.get('/api/ehs/sessioni/', {'stato': 'IN_APPROVAZIONE'}).status_code, 200)
+        ehs = RichiestaCancellazione.objects.create(richiedente=self.persona, motivazione='x', snap_tipologia='ehs')
+        altra = RichiestaCancellazione.objects.create(richiedente=self.persona, motivazione='x', snap_tipologia='ld')
+        self.assertEqual({r['id'] for r in self.c.get('/api/richieste-cancellazione/', {'ambito': 'ehs'}).json()}, {ehs.id})
+        self.assertEqual({r['id'] for r in self.c.get('/api/richieste-cancellazione/').json()}, {altra.id})
+        self.assertEqual(self.c.patch(f'/api/richieste-cancellazione/{ehs.id}/', {'stato': 'rifiutata'},
+                                      format='json').status_code, 403)
+
     def test_fuori_da_ehs_resta_operativo(self):
         dati = {'evento': self.normale.id, 'user': self.altra.id, 'stato': 'iscritto'}
         self.assertEqual(self.c.post('/api/iscrizioni/', dati, format='json').status_code, 201)

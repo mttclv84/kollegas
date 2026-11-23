@@ -285,6 +285,8 @@ class RichiestaCancellazioneListCreateView(APIView):
             pass  # vede tutto
         elif user.livello_accesso == 'admin_ehs':
             qs = qs.filter(snap_tipologia=TIPOLOGIA_EHS)
+        elif user.livello_accesso == 'ho' and ambito == 'ehs':
+            pass  # pagina Richieste EHS: tutte, in sola visione (le decide l'EHS Admin)
         elif user.livello_accesso == 'ho':
             qs = qs.exclude(snap_tipologia=TIPOLOGIA_EHS)
             ruolo_nome = user.ruolo.nome if user.ruolo else ''
