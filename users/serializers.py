@@ -1,5 +1,7 @@
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from .accesso import MESSAGGIO_SENZA_ACCESSO, ha_accesso
 from .models import User, Role, PercorsoCrescita, AuditLog, RichiestaCreazioneProfilo, RichiestaEliminazioneProfilo
 
 
@@ -14,7 +16,14 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
-        data = super().validate(attrs)
+        try:
+            data = super().validate(attrs)
+        except AuthenticationFailed:
+            # Credenziali corrette ma livello senza accesso: messaggio esplicito (403).
+            utente = getattr(self, 'user', None)
+            if utente is not None and utente.is_active and not ha_accesso(utente):
+                raise PermissionDenied(MESSAGGIO_SENZA_ACCESSO)
+            raise
         data['user'] = {
             'id': self.user.id,
             'email': self.user.email,

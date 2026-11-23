@@ -43,6 +43,41 @@ class AuditAutomaticoTest(TestCase):
         self.assertEqual(AuditLog.objects.get().azione, 'accesso')
 
 
+class AccessoProfiliBaseTest(TestCase):
+    def setUp(self):
+        self.base = User.objects.create_user(email='base@x.it', password='x', cognome='B', nome='B')
+        self.store = User.objects.create_user(email='store@x.it', password='x', cognome='S', nome='S',
+                                              livello_accesso='store')
+
+    def _login(self, email, password='x'):
+        return APIClient().post('/api/auth/login/', {'email': email, 'password': password}, format='json')
+
+    def test_base_non_entra_e_non_viene_registrato_accesso(self):
+        r = self._login('base@x.it')
+        self.assertEqual(r.status_code, 403)
+        self.assertIn('non ha accesso', r.data['detail'])
+        self.assertNotIn('access', r.data)
+        self.assertFalse(AuditLog.objects.filter(actor=self.base).exists())
+
+    def test_password_errata_non_rivela_il_livello(self):
+        self.assertEqual(self._login('base@x.it', 'sbagliata').status_code, 401)
+
+    def test_sessione_gia_aperta_viene_chiusa(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        token = RefreshToken.for_user(self.base)
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f'Bearer {token.access_token}')
+        self.assertEqual(c.get('/api/me/').status_code, 401)
+        self.assertEqual(APIClient().post('/api/auth/refresh/', {'refresh': str(token)}, format='json').status_code, 401)
+
+    def test_altri_profili_entrano(self):
+        r = self._login('store@x.it')
+        self.assertEqual(r.status_code, 200)
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        self.assertEqual(c.get('/api/me/').status_code, 200)
+
+
 class StatsOrePersonaTest(TestCase):
     def test_ore_per_persone_e_ns_come_donne(self):
         from participants.models import Iscrizione
