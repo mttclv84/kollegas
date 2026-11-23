@@ -118,19 +118,22 @@ class HOSolaVisioneEHSTest(TestCase):
         self.c.delete('/api/iscrizioni/assenti/')
         self.assertTrue(Iscrizione.objects.filter(pk=self.iscrizione_ehs.pk).exists())
 
-    def test_archivio_e_richieste_ehs_in_sola_visione(self):
+    def test_audit_archivio_e_richieste_ehs_non_accessibili(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
         from participants.models import RichiestaCancellazione
-        self.assertEqual(self.c.get('/api/ehs/archivio-documenti/').status_code, 200)
-        self.assertEqual(self.c.post('/api/ehs/archivio-documenti/').status_code, 403)
-        self.assertEqual(self.c.get('/api/ehs/archivio-documenti/1/zip/').status_code, 403)
-        self.assertEqual(self.c.post('/api/ehs/archivio-documenti/1/svuota/', {}, format='json').status_code, 403)
-        self.assertEqual(self.c.get('/api/ehs/sessioni/', {'stato': 'IN_APPROVAZIONE'}).status_code, 200)
+        self.assertEqual(self.c.get('/api/users/audit/').status_code, 403)
+        self.assertEqual(self.c.get('/api/ehs/archivio-documenti/').status_code, 403)
         ehs = RichiestaCancellazione.objects.create(richiedente=self.persona, motivazione='x', snap_tipologia='ehs')
         altra = RichiestaCancellazione.objects.create(richiedente=self.persona, motivazione='x', snap_tipologia='ld')
-        self.assertEqual({r['id'] for r in self.c.get('/api/richieste-cancellazione/', {'ambito': 'ehs'}).json()}, {ehs.id})
+        self.assertEqual({r['id'] for r in self.c.get('/api/richieste-cancellazione/', {'ambito': 'ehs'}).json()}, set())
         self.assertEqual({r['id'] for r in self.c.get('/api/richieste-cancellazione/').json()}, {altra.id})
-        self.assertEqual(self.c.patch(f'/api/richieste-cancellazione/{ehs.id}/', {'stato': 'rifiutata'},
-                                      format='json').status_code, 403)
+        self.assertNotEqual(ehs.id, altra.id)
+        admin_ehs = User.objects.create_user(email='ae@x.it', password='x', cognome='A', nome='E', livello_accesso='admin_ehs')
+        admin = User.objects.create_user(email='ad@x.it', password='x', cognome='A', nome='D', livello_accesso='admin')
+        for utente, atteso in ((admin_ehs, 403), (admin, 200)):
+            c = APIClient()
+            c.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(utente).access_token}')
+            self.assertEqual(c.get('/api/users/audit/').status_code, atteso)
 
     def test_fuori_da_ehs_resta_operativo(self):
         dati = {'evento': self.normale.id, 'user': self.altra.id, 'stato': 'iscritto'}

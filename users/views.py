@@ -511,7 +511,7 @@ class UserDevelopmentDetailView(APIView):
 
 
 class AuditLogListView(generics.ListAPIView):
-    permission_classes = [IsAdminOrHOEHS]
+    permission_classes = [IsAdmin]
     serializer_class = AuditLogSerializer
     pagination_class = None
 

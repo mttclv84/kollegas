@@ -512,11 +512,9 @@ def _esportazione_json(e):
 
 
 class EHSArchivioDocumentiView(APIView):
-    """GET /ehs/archivio-documenti/ — riepilogo dell'archivio mensile (Admin / Admin EHS, HO in visione).
+    """GET /ehs/archivio-documenti/ — riepilogo dell'archivio mensile (Admin / Admin EHS).
     POST — prepara l'esportazione con i documenti da archiviare (o restituisce quella aperta)."""
-
-    def get_permissions(self):
-        return [IsAdminOrHOEHS()] if self.request.method == 'GET' else [IsAdminEHS()]
+    permission_classes = [IsAdminEHS]
 
     def get(self, request):
         stato = services.stato_archivio()
