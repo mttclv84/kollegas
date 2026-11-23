@@ -258,6 +258,24 @@ class PasswordTemporaneaTest(TestCase):
         account.refresh_from_db()
         self.assertTrue(account.check_password(self.NUOVA))
 
+    def test_comando_di_lancio_con_data_di_scadenza(self):
+        from datetime import timedelta as td
+        from io import StringIO
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        from django.utils import timezone
+        User.objects.filter(pk=self.utente.pk).update(password_cambiata_il=None, deve_cambiare_password=False,
+                                                      password_scadenza=None)
+        giorno = timezone.localdate() + td(days=20)
+        with self.assertRaises(CommandError):
+            call_command('avvia_password_temporanea', scadenza='2020-01-01', stdout=StringIO())
+        with self.assertRaises(CommandError):
+            call_command('avvia_password_temporanea', scadenza='24/12/2026', stdout=StringIO())
+        call_command('avvia_password_temporanea', scadenza=giorno.isoformat(), applica=True, stdout=StringIO())
+        self.utente.refresh_from_db()
+        fine = timezone.localtime(self.utente.password_scadenza)
+        self.assertEqual((fine.date(), fine.hour, fine.minute), (giorno, 23, 59))
+
     def test_comando_di_lancio(self):
         from io import StringIO
         from django.core.management import call_command

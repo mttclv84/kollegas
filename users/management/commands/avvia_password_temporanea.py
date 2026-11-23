@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
 
 from django.contrib.auth import get_user_model
 from django.conf import settings
@@ -19,8 +19,25 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--applica', action='store_true')
+        parser.add_argument('--scadenza', help='Ultimo giorno valido (AAAA-MM-GG), fino alle 23:59. '
+                                               f'Se assente: {GIORNI_PASSWORD_TEMPORANEA} giorni da adesso.')
+
+    @staticmethod
+    def _scadenza(valore):
+        adesso = timezone.now()
+        if not valore:
+            return adesso + timedelta(days=GIORNI_PASSWORD_TEMPORANEA)
+        try:
+            giorno = date.fromisoformat(valore)
+        except ValueError:
+            raise CommandError('Scadenza non valida: usa il formato AAAA-MM-GG.')
+        fine = timezone.make_aware(datetime.combine(giorno, time(23, 59)))
+        if fine <= adesso:
+            raise CommandError('La scadenza deve essere futura.')
+        return fine
 
     def handle(self, *args, **options):
+        scadenza = self._scadenza(options.get('scadenza'))
         comune = settings.KOLLEGAS_PASSWORD_COMUNE
         if not comune:
             raise CommandError('Imposta la variabile d\'ambiente KOLLEGAS_PASSWORD_COMUNE prima del lancio.')
@@ -37,6 +54,7 @@ class Command(BaseCommand):
                     user.save(update_fields=['deve_cambiare_password'])
                 else:
                     user.imposta_password_temporanea(comune)
+                    user.password_scadenza = scadenza
                     user.save()
                     revoca_sessioni(user)
             chiaro_utenti = User.objects.exclude(raw_password='').update(raw_password='')
@@ -46,8 +64,7 @@ class Command(BaseCommand):
 
         for livello, numero in sorted(conteggi.items()):
             self.stdout.write(f'  {livello}: {numero}')
-        scadenza = timezone.localtime(timezone.now() + timedelta(days=GIORNI_PASSWORD_TEMPORANEA))
-        self.stdout.write(f'Scadenza password comune: {scadenza:%d/%m/%Y %H:%M}')
+        self.stdout.write(f'Scadenza password comune: {timezone.localtime(scadenza):%d/%m/%Y %H:%M}')
         self.stdout.write(f'Password in chiaro da cancellare: {chiaro_utenti} utenti, {chiaro_negozi} negozi')
         esito = 'AVVIATO' if options['applica'] else 'PROVA, nessuna modifica salvata'
         self.stdout.write(self.style.SUCCESS(f'{sum(conteggi.values())} profili — {esito}.'))
