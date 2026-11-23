@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from rest_framework import serializers as drf_serializers
 from .models import Host, AttivitaCatalogo, Evento, EccezioneCalendario, NotificaEvento
 from .serializers import HostSerializer, AttivitaCatalogoSerializer, EventoListSerializer, EventoDetailSerializer
+from users.accesso import MESSAGGIO_SOLA_VISIONE_EHS, sola_visione_ehs
 from users.permissions import IsAdmin, IsAdminOrHO,IsAdminOrHOEHS, IsAdminOrHOOrArea, IsAdminOrHOOrAreaEHS
 
 
@@ -108,6 +109,9 @@ class EventoListCreateView(generics.ListCreateAPIView):
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
+        dati = serializer.validated_data
+        if sola_visione_ehs(self.request.user) and (dati.get('is_ehs') or dati['attivita'].tipologia == 'ehs'):
+            self.permission_denied(self.request, message=MESSAGGIO_SOLA_VISIONE_EHS)
         super().perform_create(serializer)
         actor = self.request.user
         if actor.livello_accesso in ('admin', 'admin_ehs', 'ho'):
@@ -162,8 +166,18 @@ class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
             return [IsAuthenticated()]
         return [IsAdminOrHOEHS()]
 
+    def perform_update(self, serializer):
+        dati = serializer.validated_data
+        attivita = dati.get('attivita', serializer.instance.attivita)
+        if sola_visione_ehs(self.request.user) and (
+                serializer.instance.is_ehs or dati.get('is_ehs') or attivita.tipologia == 'ehs'):
+            self.permission_denied(self.request, message=MESSAGGIO_SOLA_VISIONE_EHS)
+        serializer.save()
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
+        if instance.is_ehs and sola_visione_ehs(request.user):
+            self.permission_denied(request, message=MESSAGGIO_SOLA_VISIONE_EHS)
         motivazione = (request.data.get('motivazione') or request.query_params.get('motivazione') or '').strip()
         if not motivazione:
             return Response({'detail': 'La motivazione è obbligatoria per annullare un evento.'}, status=400)

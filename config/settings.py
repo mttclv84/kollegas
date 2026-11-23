@@ -43,6 +43,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'users.middleware.SolaLetturaMiddleware',
+    'users.middleware.SolaVisioneEHSMiddleware',
     'ehs.middleware.AutomatismiGiornalieriMiddleware',
     'users.middleware.AuditMiddleware',
 ]

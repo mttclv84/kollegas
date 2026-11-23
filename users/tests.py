@@ -78,6 +78,52 @@ class AccessoProfiliBaseTest(TestCase):
         self.assertEqual(c.get('/api/me/').status_code, 200)
 
 
+class HOSolaVisioneEHSTest(TestCase):
+    def setUp(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from participants.models import Iscrizione
+        self.ho = User.objects.create_user(email='ho@x.it', password='x', cognome='H', nome='O', livello_accesso='ho')
+        self.persona = User.objects.create_user(email='p@x.it', password='x', cognome='P', nome='P')
+        self.altra = User.objects.create_user(email='q@x.it', password='x', cognome='Q', nome='Q')
+        host = Host.objects.create(descrizione='T', posizione='interno')
+
+        def evento(tipologia, is_ehs):
+            return Evento.objects.create(
+                data=date.today() + timedelta(days=1), ora_inizio=time(9), ora_fine=time(13), is_ehs=is_ehs, host=host,
+                attivita=AttivitaCatalogo.objects.create(nome=f'Corso {tipologia}', tipologia=tipologia))
+
+        self.ehs = evento('ehs', True)
+        self.normale = evento('ld', False)
+        self.iscrizione_ehs = Iscrizione.objects.create(evento=self.ehs, user=self.persona, stato='assente')
+        self.c = APIClient()
+        self.c.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.ho).access_token}')
+
+    def test_legge_ma_non_scrive_nelle_api_ehs(self):
+        self.assertEqual(self.c.get('/api/ehs/corsi/').status_code, 200)
+        self.assertEqual(self.c.get('/api/ehs/fornitori/').status_code, 200)
+        for metodo, url in (('post', '/api/ehs/corsi/'), ('post', '/api/ehs/sessioni/'), ('post', '/api/ehs/fornitori/'),
+                            ('patch', '/api/ehs/sessioni/1/annulla/'), ('delete', '/api/ehs/fornitori/1/')):
+            self.assertEqual(getattr(self.c, metodo)(url, {}, format='json').status_code, 403, url)
+
+    def test_non_tocca_iscrizioni_ed_eventi_ehs(self):
+        from participants.models import Iscrizione
+        dati = {'evento': self.ehs.id, 'user': self.altra.id, 'stato': 'iscritto'}
+        self.assertEqual(self.c.post('/api/iscrizioni/', dati, format='json').status_code, 403)
+        self.assertEqual(self.c.patch(f'/api/iscrizioni/{self.iscrizione_ehs.id}/', {'stato': 'partecipato'},
+                                      format='json').status_code, 403)
+        self.assertEqual(self.c.post('/api/richieste-cancellazione/', {
+            'iscrizione': self.iscrizione_ehs.id, 'motivazione': 'x'}, format='json').status_code, 403)
+        self.assertEqual(self.c.patch(f'/api/eventi/{self.ehs.id}/', {'nota': 'x'}, format='json').status_code, 403)
+        self.assertEqual(self.c.delete(f'/api/eventi/{self.ehs.id}/?motivazione=x').status_code, 403)
+        self.c.delete('/api/iscrizioni/assenti/')
+        self.assertTrue(Iscrizione.objects.filter(pk=self.iscrizione_ehs.pk).exists())
+
+    def test_fuori_da_ehs_resta_operativo(self):
+        dati = {'evento': self.normale.id, 'user': self.altra.id, 'stato': 'iscritto'}
+        self.assertEqual(self.c.post('/api/iscrizioni/', dati, format='json').status_code, 201)
+        self.assertEqual(self.c.patch(f'/api/eventi/{self.normale.id}/', {'nota': 'x'}, format='json').status_code, 200)
+
+
 class StatsOrePersonaTest(TestCase):
     def test_ore_per_persone_e_ns_come_donne(self):
         from participants.models import Iscrizione

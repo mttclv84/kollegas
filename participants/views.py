@@ -8,6 +8,7 @@ from django.db.models import Prefetch
 from django.utils import timezone
 from .models import Iscrizione, RichiestaCancellazione
 from .serializers import IscrizioneSerializer, RichiestaCancellazioneSerializer
+from users.accesso import MESSAGGIO_SOLA_VISIONE_EHS, sola_visione_ehs
 from users.permissions import IsAdminOrHOEHS, IsAdminOrHOOrArea, CanManageUsers, IsAdminOrHOOrAreaEHS
 
 GIORNI_BLOCCO = 12
@@ -82,6 +83,8 @@ class IscrizioneListCreateView(generics.ListCreateAPIView):
         if target_user.livello_accesso in ('store', 'fornitore'):
             raise ValidationError({'detail': 'Questo account non può essere iscritto a una formazione.'})
         evento = serializer.validated_data['evento']
+        if evento.is_ehs and sola_visione_ehs(user):
+            self.permission_denied(self.request, message=MESSAGGIO_SOLA_VISIONE_EHS)
         if aula_chiusa(evento, user):
             self.permission_denied(self.request, message=MSG_AULA_CHIUSA)
         # Ogni evento del calendario è aperto a tutti gli store fino a esaurimento posti
@@ -110,7 +113,10 @@ class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
         return qs
 
     def update(self, request, *args, **kwargs):
-        if aula_chiusa(self.get_object().evento, request.user):
+        evento = self.get_object().evento
+        if evento.is_ehs and sola_visione_ehs(request.user):
+            return Response({'detail': MESSAGGIO_SOLA_VISIONE_EHS}, status=status.HTTP_403_FORBIDDEN)
+        if aula_chiusa(evento, request.user):
             return Response({'detail': MSG_AULA_CHIUSA}, status=status.HTTP_403_FORBIDDEN)
         return super().update(request, *args, **kwargs)
 
@@ -150,6 +156,8 @@ class DeleteAssentiView(APIView):
     def delete(self, request):
         user = request.user
         qs = Iscrizione.objects.filter(stato='assente')
+        if sola_visione_ehs(user):
+            qs = qs.exclude(evento__is_ehs=True)
         if user.livello_accesso == 'store':
             qs = qs.filter(user__store=user.store)
         params = request.query_params
@@ -309,6 +317,8 @@ class RichiestaCancellazioneListCreateView(APIView):
         except Iscrizione.DoesNotExist:
             return Response({'detail': 'Iscrizione non trovata.'}, status=404)
 
+        if iscrizione.evento.is_ehs and sola_visione_ehs(user):
+            return Response({'detail': MESSAGGIO_SOLA_VISIONE_EHS}, status=403)
         if user.livello_accesso == 'store' and iscrizione.user.store_id != user.store_id:
             return Response({'detail': 'Iscrizione non di questo store.'}, status=403)
 

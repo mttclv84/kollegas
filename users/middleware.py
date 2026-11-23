@@ -134,6 +134,35 @@ class SolaLetturaMiddleware:
         return bool(esito and esito[0].sola_lettura)
 
 
+class SolaVisioneEHSMiddleware:
+    """HO nella sezione EHS: rifiuta ogni scrittura su /api/ehs/. Restano consentite solo
+    le spunte personali di lettura di notifiche e avvisi, che non toccano i dati EHS."""
+
+    CONSENTITI = re.compile(r'^/api/ehs/(notifiche-|avvisi/)')
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        path = request.path
+        if (request.method in ('GET', 'HEAD', 'OPTIONS') or not path.startswith('/api/ehs/')
+                or self.CONSENTITI.search(path) or not self._sola_visione(request)):
+            return self.get_response(request)
+        from django.http import JsonResponse
+        from .accesso import MESSAGGIO_SOLA_VISIONE_EHS
+        return JsonResponse({'detail': MESSAGGIO_SOLA_VISIONE_EHS}, status=403)
+
+    @staticmethod
+    def _sola_visione(request):
+        from rest_framework_simplejwt.authentication import JWTAuthentication
+        from .accesso import sola_visione_ehs
+        try:
+            esito = JWTAuthentication().authenticate(request)
+        except Exception:
+            return False
+        return bool(esito and sola_visione_ehs(esito[0]))
+
+
 # ── Anonimizzazione per i profili in sola lettura: ogni persona diventa "Rossi Mario" ──
 COGNOME_FINTO, NOME_FINTO = 'Rossi', 'Mario'
 NOME_COMPLETO_FINTO = f'{COGNOME_FINTO} {NOME_FINTO}'
