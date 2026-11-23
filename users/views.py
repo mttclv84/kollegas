@@ -4,16 +4,27 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.permissions import AllowAny
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from .models import Role, PercorsoCrescita, AuditLog, UserDocument, RichiestaCreazioneProfilo, RichiestaEliminazioneProfilo, NotificaTrasferimento
+from .accesso import (
+    LIVELLI_SENZA_ACCESSO, genera_password_temporanea, password_comune, password_non_ammessa, revoca_sessioni,
+)
+from .models import (
+    Role, PercorsoCrescita, AuditLog, UserDocument, RichiestaCreazioneProfilo, RichiestaEliminazioneProfilo,
+    NotificaTrasferimento, RichiestaResetPassword,
+)
 from participants.models import Iscrizione
 from .serializers import (
     CustomTokenObtainPairSerializer, UserListSerializer,
     UserDetailSerializer, RoleSerializer, PercorsoCrescitaSerializer,
     AuditLogSerializer, RichiestaCreazionoProfiloSerializer,
-    RichiestaEliminazioneProfiloSerializer,
+    RichiestaEliminazioneProfiloSerializer, RichiestaResetPasswordSerializer, dati_utente_login,
 )
 from .permissions import IsAdmin, IsAdminOrHO, IsAdminOrHOOrArea, CanManageUsers, IsAdminEHS, IsAdminOrHOEHS, IsAdminOrHOOrAreaEHS
 
@@ -59,6 +70,99 @@ class LogoutView(APIView):
             return Response({'detail': 'Token non valido.'}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class CambiaPasswordView(APIView):
+    """POST /auth/cambia-password/ — l'utente sceglie la propria password. Chiude le altre
+    sessioni aperte e restituisce nuovi token per quella in corso."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.sola_lettura:
+            return Response({'detail': 'Profilo in sola lettura: operazione non consentita.'}, status=403)
+        attuale = request.data.get('password_attuale') or ''
+        nuova = request.data.get('nuova_password') or ''
+        if not user.check_password(attuale):
+            return Response({'detail': 'La password attuale non è corretta.'}, status=400)
+        if nuova == attuale or password_non_ammessa(nuova):
+            return Response({'detail': 'Scegli una password diversa da quella attuale e da quella comune.'}, status=400)
+        try:
+            validate_password(nuova, user)
+        except DjangoValidationError as e:
+            return Response({'detail': ' '.join(e.messages)}, status=400)
+        with transaction.atomic():
+            user.imposta_password_personale(nuova)
+            user.save()
+            revoca_sessioni(user)
+            RichiestaResetPassword.objects.filter(user=user, stato='pending').update(
+                stato='completata', processed_at=timezone.now())
+        log_audit(user, 'modifica', 'utente', user, 'Password cambiata dall\'utente')
+        token = CustomTokenObtainPairSerializer.get_token(user)
+        return Response({'access': str(token.access_token), 'refresh': str(token), 'user': dati_utente_login(user)})
+
+
+class RichiediResetPasswordView(APIView):
+    """POST /auth/richiedi-reset/ {email} — pubblica. Risposta sempre uguale, così non
+    rivela quali email esistono. La richiesta arriva all'Admin."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        email = str(request.data.get('email') or '').strip()
+        user = User.objects.filter(email__iexact=email, is_active=True, sola_lettura=False).exclude(
+            livello_accesso__in=LIVELLI_SENZA_ACCESSO).first() if email else None
+        if user:
+            RichiestaResetPassword.objects.get_or_create(user=user, stato='pending')
+        return Response({'detail': 'Richiesta registrata. Se l\'account è abilitato, l\'Admin ti invierà una password temporanea.'})
+
+
+def _esegui_reset_password(target, actor):
+    password = genera_password_temporanea()
+    with transaction.atomic():
+        target.imposta_password_temporanea(password)
+        target.save()
+        revoca_sessioni(target)
+        RichiestaResetPassword.objects.filter(user=target, stato='pending').update(
+            stato='completata', processed_by=actor, processed_at=timezone.now())
+    log_audit(actor, 'modifica', 'utente', target, 'Reset password con password temporanea individuale')
+    return password
+
+
+class RichiesteResetPasswordView(APIView):
+    """GET — richieste in attesa (solo Admin)."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        qs = RichiestaResetPassword.objects.filter(stato='pending').select_related('user', 'user__store')
+        return Response(RichiestaResetPasswordSerializer(qs, many=True).data)
+
+
+class RichiestaResetPasswordDetailView(APIView):
+    """POST {azione: 'reset'|'rifiuta'}. Con 'reset' la password viene mostrata solo in questa risposta."""
+    permission_classes = [IsAdmin]
+
+    def post(self, request, pk):
+        richiesta = get_object_or_404(RichiestaResetPassword.objects.select_related('user'), pk=pk, stato='pending')
+        azione = request.data.get('azione')
+        if azione == 'reset':
+            return Response({'password_temporanea': _esegui_reset_password(richiesta.user, request.user)})
+        if azione == 'rifiuta':
+            richiesta.stato = 'rifiutata'
+            richiesta.processed_by = request.user
+            richiesta.processed_at = timezone.now()
+            richiesta.save()
+            return Response({'ok': True})
+        return Response({'detail': 'Azione non valida.'}, status=400)
+
+
+class UserResetPasswordView(APIView):
+    """POST /users/<id>/reset-password/ — reset diretto da Gestione Account (solo Admin)."""
+    permission_classes = [IsAdmin]
+
+    def post(self, request, pk):
+        target = get_object_or_404(User, pk=pk)
+        return Response({'password_temporanea': _esegui_reset_password(target, request.user)})
+
+
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -70,6 +174,7 @@ class MeView(APIView):
         serializer = UserDetailSerializer(request.user, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.validated_data.pop('livello_accesso', None)
+            serializer.validated_data.pop('password', None)  # si cambia solo da /auth/cambia-password/
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -127,6 +232,8 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         nuovo_livello = serializer.validated_data.get('livello_accesso')
         if nuovo_livello and livello_chi_modifica == 'ho' and nuovo_livello not in ('area', 'base'):
             raise ValidationError({'livello_accesso': 'HO può assegnare solo livelli Area Manager o Base.'})
+        if nuovo_livello and livello_chi_modifica == 'store' and nuovo_livello != serializer.instance.livello_accesso:
+            raise ValidationError({'livello_accesso': 'Lo Store non può cambiare il livello di accesso.'})
         if 'store' in serializer.validated_data and not serializer.validated_data.get('store'):
             raise ValidationError({'store': 'Il workplace è obbligatorio.'})
 
@@ -715,9 +822,7 @@ class RichiestaCreazionoProfiloDetailView(APIView):
                 ruolo=richiesta.ruolo,
                 commento_mapping=richiesta.commento_mapping,
             )
-            default_pwd = 'Primark01!'
-            new_user.set_password(default_pwd)
-            new_user.raw_password = default_pwd
+            new_user.imposta_password_temporanea(password_comune())
             new_user.save()
             log_audit(request.user, 'crea', 'utente', new_user,
                       f'Utente creato da richiesta store #{richiesta.id}: {new_user.email}')

@@ -81,6 +81,9 @@ else:
 
 AUTH_USER_MODEL = 'users.User'
 
+# Password di primo accesso: solo come variabile d'ambiente, mai nel codice.
+KOLLEGAS_PASSWORD_COMUNE = os.getenv('KOLLEGAS_PASSWORD_COMUNE', '')
+
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},

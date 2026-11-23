@@ -1,8 +1,43 @@
 from rest_framework import serializers
-from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
+from datetime import timedelta
+
+from django.db.models import F
+from django.utils import timezone
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied, Throttled
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .accesso import MESSAGGIO_SENZA_ACCESSO, ha_accesso
-from .models import User, Role, PercorsoCrescita, AuditLog, RichiestaCreazioneProfilo, RichiestaEliminazioneProfilo
+from .accesso import MESSAGGIO_TENTATIVI, ha_accesso, messaggio_senza_accesso, password_comune, revoca_sessioni
+from .models import (
+    User, Role, PercorsoCrescita, AuditLog, RichiestaCreazioneProfilo, RichiestaEliminazioneProfilo,
+    RichiestaResetPassword,
+)
+
+TENTATIVI_MASSIMI = 10
+MINUTI_BLOCCO = 15
+
+
+def dati_utente_login(user):
+    return {
+        'id': user.id,
+        'email': user.email,
+        'nome_completo': user.nome_completo,
+        'cognome': user.cognome,
+        'nome': user.nome,
+        'livello_accesso': user.livello_accesso,
+        'store_id': user.store_id,
+        'store_nome': str(user.store) if user.store else None,
+        'foto': user.foto.url if user.foto else None,
+        'sola_lettura': user.sola_lettura,
+        'deve_cambiare_password': user.deve_cambiare_password,
+        'password_scadenza': user.password_scadenza,
+    }
+
+
+def _registra_tentativo_fallito(user):
+    User.objects.filter(pk=user.pk).update(tentativi_falliti=F('tentativi_falliti') + 1)
+    user.refresh_from_db(fields=['tentativi_falliti'])
+    if user.tentativi_falliti >= TENTATIVI_MASSIMI:
+        User.objects.filter(pk=user.pk).update(
+            tentativi_falliti=0, bloccato_fino=timezone.now() + timedelta(minutes=MINUTI_BLOCCO))
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -16,26 +51,22 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
+        account = User.objects.filter(email=attrs.get('email')).first()
+        if account and account.bloccato_fino and account.bloccato_fino > timezone.now():
+            raise Throttled(detail=MESSAGGIO_TENTATIVI)
         try:
             data = super().validate(attrs)
         except AuthenticationFailed:
-            # Credenziali corrette ma livello senza accesso: messaggio esplicito (403).
             utente = getattr(self, 'user', None)
+            # Credenziali corrette ma accesso non consentito: messaggio esplicito (403).
             if utente is not None and utente.is_active and not ha_accesso(utente):
-                raise PermissionDenied(MESSAGGIO_SENZA_ACCESSO)
+                raise PermissionDenied(messaggio_senza_accesso(utente))
+            if utente is None and account:
+                _registra_tentativo_fallito(account)
             raise
-        data['user'] = {
-            'id': self.user.id,
-            'email': self.user.email,
-            'nome_completo': self.user.nome_completo,
-            'cognome': self.user.cognome,
-            'nome': self.user.nome,
-            'livello_accesso': self.user.livello_accesso,
-            'store_id': self.user.store_id,
-            'store_nome': str(self.user.store) if self.user.store else None,
-            'foto': self.user.foto.url if self.user.foto else None,
-            'sola_lettura': self.user.sola_lettura,
-        }
+        if self.user.tentativi_falliti or self.user.bloccato_fino:
+            User.objects.filter(pk=self.user.pk).update(tentativi_falliti=0, bloccato_fino=None)
+        data['user'] = dati_utente_login(self.user)
         AuditLog.objects.create(actor=self.user, azione='accesso', target_tipo='Accesso',
                                 target_id=self.user.id, target_repr=self.user.nome_completo)
         return data
@@ -64,7 +95,6 @@ class UserDetailSerializer(serializers.ModelSerializer):
     store_nome = serializers.CharField(source='store.nome', read_only=True)
     ruolo_nome = serializers.CharField(source='ruolo.nome', read_only=True)
     password = serializers.CharField(write_only=True, required=False)
-    raw_password = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -72,35 +102,42 @@ class UserDetailSerializer(serializers.ModelSerializer):
             'id', 'cognome', 'nome', 'email', 'sesso', 'livello_accesso',
             'store', 'store_nome', 'codice_matricola', 'ruolo', 'ruolo_nome',
             'foto', 'commento_mapping', 'long_absence', 'is_active',
-            'created_at', 'updated_at', 'password', 'raw_password',
+            'created_at', 'updated_at', 'password', 'deve_cambiare_password', 'password_scadenza',
         ]
-        read_only_fields = ['created_at', 'updated_at']
-
-    DEFAULT_PASSWORD = 'Primark01!'
-
-    def get_raw_password(self, obj):
-        request = self.context.get('request')
-        if request and request.user.livello_accesso in ('admin', 'ho') and not request.user.sola_lettura:
-            return obj.raw_password or None
-        return None
+        read_only_fields = ['created_at', 'updated_at', 'deve_cambiare_password', 'password_scadenza']
 
     def create(self, validated_data):
-        password = validated_data.pop('password', None) or self.DEFAULT_PASSWORD
+        password = validated_data.pop('password', None) or password_comune()
         user = User(**validated_data)
-        user.set_password(password)
-        user.raw_password = password
+        user.imposta_password_temporanea(password)
         user.save()
         return user
 
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
+        if password:
+            request = self.context.get('request')
+            if not request or request.user.livello_accesso != 'admin':
+                raise PermissionDenied('Solo l\'Admin può reimpostare una password.')
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         if password:
-            instance.set_password(password)
-            instance.raw_password = password
+            instance.imposta_password_temporanea(password)
         instance.save()
+        if password:
+            revoca_sessioni(instance)
         return instance
+
+
+class RichiestaResetPasswordSerializer(serializers.ModelSerializer):
+    utente_nome = serializers.CharField(source='user.nome_completo', read_only=True)
+    email = serializers.CharField(source='user.email', read_only=True)
+    livello_accesso = serializers.CharField(source='user.livello_accesso', read_only=True)
+    store_nome = serializers.CharField(source='user.store.nome', read_only=True, default='')
+
+    class Meta:
+        model = RichiestaResetPassword
+        fields = ['id', 'user', 'utente_nome', 'email', 'livello_accesso', 'store_nome', 'stato', 'created_at']
 
 
 class PercorsoCrescitaSerializer(serializers.ModelSerializer):

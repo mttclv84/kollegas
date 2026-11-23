@@ -148,7 +148,11 @@ class Command(BaseCommand):
         with transaction.atomic():
             for email, data in to_create:
                 user = User(email=email, **data)
-                user.set_password('Primark2026!')
+                # I Base non entrano: la scadenza partirà quando verrà aperto il loro accesso.
+                if user.livello_accesso == 'base':
+                    user.set_password('Primark01!')
+                else:
+                    user.imposta_password_temporanea('Primark01!')
                 user.save()
                 created_count += 1
 

@@ -8,6 +8,7 @@ from .views import (
     RichiestaCreazionoProfiloListCreateView, RichiestaCreazionoProfiloDetailView,
     RichiestaEliminazioneProfiloListCreateView, RichiestaEliminazioneProfiloDetailView,
     AccountBadgeView, NextMatricolaView, NotificaTrasferimentoView,
+    RichiesteResetPasswordView, RichiestaResetPasswordDetailView, UserResetPasswordView,
 )
 
 urlpatterns = [
@@ -17,6 +18,9 @@ urlpatterns = [
     path('users/search/', DevelopmentSearchView.as_view(), name='user-search'),
     path('users/audit/', AuditLogListView.as_view(), name='audit-log'),
     path('users/<int:pk>/', UserDetailView.as_view(), name='user-detail'),
+    path('users/<int:pk>/reset-password/', UserResetPasswordView.as_view(), name='user-reset-password'),
+    path('richieste-reset-password/', RichiesteResetPasswordView.as_view(), name='richieste-reset-password'),
+    path('richieste-reset-password/<int:pk>/', RichiestaResetPasswordDetailView.as_view(), name='richiesta-reset-password'),
     path('users/<int:pk>/development/', UserDevelopmentDetailView.as_view(), name='user-development'),
     path('users/<int:user_id>/percorso/', PercorsoCrescitaListCreateView.as_view(), name='percorso-crescita'),
     path('percorso/<int:pk>/', PercorsoCrescitaDeleteView.as_view(), name='percorso-delete'),

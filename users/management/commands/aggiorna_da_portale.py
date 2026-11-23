@@ -69,7 +69,7 @@ RUOLI_SOLO_PORTALE_NUOVO = {'L&D', 'Recruiting'}
 STATO_MAP = {'validato': 'partecipato', 'da definire': 'iscritto'}
 PRIORITA_STATO = {'partecipato': 3, 'assente': 2, 'iscritto': 1}
 NOMI_MASCHILI_IN_A = {'andrea', 'luca', 'mattia', 'nicola', 'elia', 'enea', 'battista', 'gianluca', 'tobia', 'zaccaria'}
-PASSWORD_INIZIALE = 'Primark2026!'
+PASSWORD_INIZIALE = 'Primark01!'
 
 
 def norm(s):
@@ -171,7 +171,11 @@ class Command(BaseCommand):
                 u = User(email=f'user{mid}@primark.it', cognome=cognome, nome=nome, codice_matricola=mid,
                          livello_accesso=livello, store=store, ruolo=ruoli.get(ruolo_nome),
                          long_absence=long_absence, sesso=sesso)
-                u.set_password(PASSWORD_INIZIALE)
+                # I Base non entrano: la scadenza partirà quando verrà aperto il loro accesso.
+                if livello == 'base':
+                    u.set_password(PASSWORD_INIZIALE)
+                else:
+                    u.imposta_password_temporanea(PASSWORD_INIZIALE)
                 u.save()
                 by_mat[mid] = u
                 self.log['utenti creati'].append(

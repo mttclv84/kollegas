@@ -13,7 +13,7 @@ class Command(BaseCommand):
                 nome='Mattia',
                 livello_accesso='admin',
             )
-            u.raw_password = 'Primark01!'
+            u.imposta_password_temporanea('Primark01!')
             u.save()
             self.stdout.write('Admin creato.')
         else:

@@ -690,8 +690,8 @@ class EHSFornitoreListCreateView(APIView):
             telefono=telefono,
             indirizzo=indirizzo,
         )
-        fornitore.raw_password = DEFAULT_FORNITORE_PASSWORD
-        fornitore.save(update_fields=['raw_password'])
+        fornitore.imposta_password_temporanea(DEFAULT_FORNITORE_PASSWORD)
+        fornitore.save()
         data = EHSFornitoreSerializer(fornitore).data
         data['password_iniziale'] = DEFAULT_FORNITORE_PASSWORD
         return Response(data, status=201)

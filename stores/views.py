@@ -21,10 +21,11 @@ def _sync_store_user(store, password=None):
     user.nome = ''
     user.is_active = store.is_active
 
-    pwd = password or store.portale_password
+    # La password salvata sul negozio vale solo per creare l'account: riscriverla a ogni
+    # modifica del negozio annullerebbe quella scelta dall'utente.
+    pwd = password or (store.portale_password if user._state.adding else None)
     if pwd:
-        user.set_password(pwd)
-        user.raw_password = pwd
+        user.imposta_password_temporanea(pwd)
 
     user.save()
 

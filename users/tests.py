@@ -1,6 +1,6 @@
 from datetime import date, time, timedelta
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from events.models import AttivitaCatalogo, Evento, Host
@@ -136,6 +136,155 @@ class HOSolaVisioneEHSTest(TestCase):
         dati = {'evento': self.normale.id, 'user': self.altra.id, 'stato': 'iscritto'}
         self.assertEqual(self.c.post('/api/iscrizioni/', dati, format='json').status_code, 201)
         self.assertEqual(self.c.patch(f'/api/eventi/{self.normale.id}/', {'nota': 'x'}, format='json').status_code, 200)
+
+
+@override_settings(KOLLEGAS_PASSWORD_COMUNE='Comune-Test-9x')
+class PasswordTemporaneaTest(TestCase):
+    NUOVA = 'Girasole-Blu-47'
+
+    def setUp(self):
+        self.negozio = Store.objects.create(nome='Roma', comune='Roma', provincia='RM', email_store='rm@x.it')
+        self.admin = User.objects.create_user(email='admin@x.it', password='Admin-Pwd-77', cognome='A', nome='A',
+                                              livello_accesso='admin')
+        self.utente = User.objects.create_user(email='area@x.it', password='x', cognome='Rossi', nome='Anna',
+                                               livello_accesso='area', store=self.negozio)
+        self.utente.imposta_password_temporanea('Comune-Test-9x')
+        self.utente.save()
+
+    def _login(self, email='area@x.it', password='Comune-Test-9x'):
+        return APIClient().post('/api/auth/login/', {'email': email, 'password': password}, format='json')
+
+    def _client(self, access):
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        return c
+
+    def _admin(self):
+        return self._client(self._login('admin@x.it', 'Admin-Pwd-77').data['access'])
+
+    def test_obbligo_di_cambio_al_primo_accesso(self):
+        r = self._login()
+        self.assertTrue(r.data['user']['deve_cambiare_password'])
+        c = self._client(r.data['access'])
+        bloccata = c.get('/api/stores/')
+        self.assertEqual((bloccata.status_code, bloccata.data['codice']), (403, 'cambio_password_richiesto'))
+        self.assertEqual(c.get('/api/me/').status_code, 200)
+        url = '/api/auth/cambia-password/'
+        self.assertEqual(c.post(url, {'password_attuale': 'no', 'nuova_password': self.NUOVA}, format='json').status_code, 400)
+        for debole in ('Comune-Test-9x', 'Primark99!', '12345678'):
+            self.assertEqual(c.post(url, {'password_attuale': 'Comune-Test-9x', 'nuova_password': debole},
+                                    format='json').status_code, 400, debole)
+        ok = c.post(url, {'password_attuale': 'Comune-Test-9x', 'nuova_password': self.NUOVA}, format='json')
+        self.assertEqual(ok.status_code, 200)
+        self.assertFalse(ok.data['user']['deve_cambiare_password'])
+        self.assertEqual(self._client(ok.data['access']).get('/api/stores/').status_code, 200)
+        self.utente.refresh_from_db()
+        self.assertEqual(self.utente.raw_password, '')
+        self.assertEqual(self._login().status_code, 401)
+        self.assertEqual(self._login(password=self.NUOVA).status_code, 200)
+
+    def test_vecchia_sessione_chiusa_dopo_il_cambio(self):
+        from datetime import timedelta as td
+        from django.utils import timezone
+        from rest_framework_simplejwt.tokens import RefreshToken
+        vecchio = RefreshToken.for_user(self.utente)
+        User.objects.filter(pk=self.utente.pk).update(
+            deve_cambiare_password=False, password_cambiata_il=timezone.now() + td(seconds=5))
+        self.assertEqual(self._client(vecchio.access_token).get('/api/me/').status_code, 401)
+
+    def test_password_temporanea_scaduta(self):
+        from datetime import timedelta as td
+        from django.utils import timezone
+        access = self._login().data['access']
+        User.objects.filter(pk=self.utente.pk).update(password_scadenza=timezone.now() - td(minutes=1))
+        r = self._login()
+        self.assertEqual(r.status_code, 403)
+        self.assertIn('scaduta', r.data['detail'])
+        self.assertEqual(self._client(access).get('/api/me/').status_code, 401)
+
+    def test_admin_non_scade(self):
+        self.admin.imposta_password_temporanea('Admin-Pwd-77')
+        self.assertIsNone(self.admin.password_scadenza)
+
+    def test_richiesta_reset_e_password_individuale(self):
+        from .models import RichiestaResetPassword
+        base = User.objects.create_user(email='b@x.it', password='x', cognome='B', nome='B')
+        url = '/api/auth/richiedi-reset/'
+        risposte = [APIClient().post(url, {'email': e}, format='json') for e in ('AREA@x.it', 'area@x.it', 'ignoto@x.it', base.email)]
+        self.assertEqual(len({(r.status_code, r.data['detail']) for r in risposte}), 1)
+        richiesta = RichiestaResetPassword.objects.get()
+        self.assertEqual(richiesta.user, self.utente)
+        ho = User.objects.create_user(email='ho@x.it', password='Ho-Pwd-5533', cognome='H', nome='O', livello_accesso='ho')
+        c_ho = self._client(self._login(ho.email, 'Ho-Pwd-5533').data['access'])
+        self.assertEqual(c_ho.get('/api/richieste-reset-password/').status_code, 403)
+        self.assertEqual(c_ho.post(f'/api/richieste-reset-password/{richiesta.id}/', {'azione': 'reset'}, format='json').status_code, 403)
+        admin = self._admin()
+        self.assertEqual(len(admin.get('/api/richieste-reset-password/').json()), 1)
+        r = admin.post(f'/api/richieste-reset-password/{richiesta.id}/', {'azione': 'reset'}, format='json')
+        nuova = r.data['password_temporanea']
+        self.assertNotEqual(nuova, 'Comune-Test-9x')
+        self.assertEqual(admin.get('/api/richieste-reset-password/').json(), [])
+        self.assertEqual(self._login().status_code, 401)
+        self.assertTrue(self._login(password=nuova).data['user']['deve_cambiare_password'])
+        self.assertFalse(AuditLog.objects.filter(dettaglio__contains=nuova).exists())
+
+    def test_blocco_dopo_troppi_tentativi(self):
+        for _ in range(10):
+            self.assertEqual(self._login(password='errata').status_code, 401)
+        self.assertEqual(self._login().status_code, 429)
+
+    def test_solo_admin_reimposta_e_store_non_cambia_livello(self):
+        account = User.objects.create_user(email='s@x.it', password='Store-Pwd-81', cognome='S', nome='S',
+                                           livello_accesso='store', store=self.negozio)
+        collega = User.objects.create_user(email='c@x.it', password='x', cognome='C', nome='C', store=self.negozio)
+        c = self._client(self._login(account.email, 'Store-Pwd-81').data['access'])
+        self.assertEqual(c.patch(f'/api/users/{collega.id}/', {'password': self.NUOVA}, format='json').status_code, 403)
+        self.assertEqual(c.patch(f'/api/users/{collega.id}/', {'livello_accesso': 'admin'}, format='json').status_code, 400)
+        c.patch('/api/me/', {'password': self.NUOVA}, format='json')
+        account.refresh_from_db()
+        collega.refresh_from_db()
+        self.assertTrue(account.check_password('Store-Pwd-81'))
+        self.assertFalse(collega.check_password(self.NUOVA))
+        self.assertEqual(collega.livello_accesso, 'base')
+
+    def test_modifica_negozio_non_riscrive_la_password(self):
+        from stores.views import _sync_store_user
+        self.negozio.portale_password = 'Vecchia-Pwd-1'
+        self.negozio.save()
+        account = User.objects.create(email='rm@x.it', cognome='Roma', livello_accesso='store', store=self.negozio)
+        account.imposta_password_personale(self.NUOVA)
+        account.save()
+        _sync_store_user(self.negozio)
+        account.refresh_from_db()
+        self.assertTrue(account.check_password(self.NUOVA))
+
+    def test_comando_di_lancio(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        User.objects.filter(pk=self.utente.pk).update(password_cambiata_il=None, deve_cambiare_password=False,
+                                                      password_scadenza=None, raw_password='in-chiaro')
+        base = User.objects.create_user(email='b@x.it', password='base-pwd', cognome='B', nome='B')
+        fatto = User.objects.create_user(email='f@x.it', password='x', cognome='F', nome='F', livello_accesso='ho')
+        fatto.imposta_password_personale(self.NUOVA)
+        fatto.save()
+        call_command('avvia_password_temporanea', stdout=StringIO())
+        self.utente.refresh_from_db()
+        self.assertFalse(self.utente.deve_cambiare_password)
+        self.assertEqual(self.utente.raw_password, 'in-chiaro')
+        call_command('avvia_password_temporanea', applica=True, stdout=StringIO())
+        for u in (self.utente, self.admin, base, fatto):
+            u.refresh_from_db()
+        self.assertTrue(self.utente.deve_cambiare_password and self.utente.check_password('Comune-Test-9x'))
+        self.assertIsNotNone(self.utente.password_scadenza)
+        self.assertEqual(self.utente.raw_password, '')
+        self.assertTrue(self.admin.deve_cambiare_password and self.admin.check_password('Admin-Pwd-77'))
+        self.assertIsNone(self.admin.password_scadenza)
+        self.assertTrue(base.check_password('base-pwd') and not base.deve_cambiare_password)
+        self.assertTrue(fatto.check_password(self.NUOVA) and not fatto.deve_cambiare_password)
+        with override_settings(KOLLEGAS_PASSWORD_COMUNE=''):
+            with self.assertRaises(CommandError):
+                call_command('avvia_password_temporanea', stdout=StringIO())
 
 
 class StatsOrePersonaTest(TestCase):

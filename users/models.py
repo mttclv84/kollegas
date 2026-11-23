@@ -1,5 +1,12 @@
+from datetime import timedelta
+
+from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
+from django.db.models import Q
+from django.utils import timezone
+
+GIORNI_PASSWORD_TEMPORANEA = 5
 
 
 class Role(models.Model):
@@ -77,6 +84,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     raw_password = models.CharField(max_length=128, blank=True, default='')
     # Profilo osservatore: vede ciò che vede il suo livello ma non può modificare né esportare nulla.
     sola_lettura = models.BooleanField(default=False)
+    # Password temporanea: al primo accesso va sostituita, entro la scadenza.
+    deve_cambiare_password = models.BooleanField(default=False)
+    password_scadenza = models.DateTimeField(null=True, blank=True)
+    password_cambiata_il = models.DateTimeField(null=True, blank=True)
+    tentativi_falliti = models.PositiveSmallIntegerField(default=0)
+    bloccato_fino = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -118,6 +131,48 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_fornitore(self):
         return self.livello_accesso == 'fornitore'
+
+    @property
+    def password_scaduta(self):
+        return bool(self.deve_cambiare_password and self.password_scadenza
+                    and self.password_scadenza <= timezone.now())
+
+    def imposta_password_temporanea(self, password):
+        """Da sostituire al primo accesso. L'Admin non ha scadenza: è lui a sbloccare gli altri."""
+        adesso = timezone.now()
+        self.set_password(password)
+        self.raw_password = ''
+        self.deve_cambiare_password = True
+        self.password_scadenza = None if self.livello_accesso == 'admin' else adesso + timedelta(days=GIORNI_PASSWORD_TEMPORANEA)
+        self.password_cambiata_il = adesso
+        self.tentativi_falliti = 0
+        self.bloccato_fino = None
+
+    def imposta_password_personale(self, password):
+        self.set_password(password)
+        self.raw_password = ''
+        self.deve_cambiare_password = False
+        self.password_scadenza = None
+        self.password_cambiata_il = timezone.now()
+        self.tentativi_falliti = 0
+        self.bloccato_fino = None
+
+
+class RichiestaResetPassword(models.Model):
+    STATO_CHOICES = [('pending', 'In attesa'), ('completata', 'Completata'), ('rifiutata', 'Rifiutata')]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='richieste_reset_password')
+    stato = models.CharField(max_length=10, choices=STATO_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                     related_name='reset_password_gestiti')
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['user'], condition=Q(stato='pending'), name='un_reset_in_attesa_per_utente'),
+        ]
 
 
 class PercorsoCrescita(models.Model):

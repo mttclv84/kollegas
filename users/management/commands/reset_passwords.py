@@ -25,9 +25,8 @@ class Command(BaseCommand):
 
         updated = 0
         for user in qs:
-            user.set_password('Primark01!')
-            user.raw_password = 'Primark01!'
-            user.save(update_fields=['password', 'raw_password'])
+            user.imposta_password_temporanea('Primark01!')
+            user.save()
             updated += 1
 
         self.stdout.write(self.style.SUCCESS(f'Password aggiornata per {updated} utenti.'))
