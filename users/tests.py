@@ -250,6 +250,38 @@ class PasswordTemporaneaTest(TestCase):
         self.assertFalse(collega.check_password(self.NUOVA))
         self.assertEqual(collega.livello_accesso, 'base')
 
+    def test_proprio_profilo_non_modificabile_e_admin_protetto_da_ho(self):
+        altro = Store.objects.create(nome='Milano', comune='Milano', provincia='MI', email_store='mi@x.it')
+        account = User.objects.create_user(email='s@x.it', password='Store-Pwd-81', cognome='S', nome='S',
+                                           livello_accesso='store', store=self.negozio)
+        c = self._client(self._login(account.email, 'Store-Pwd-81').data['access'])
+        self.assertEqual(c.patch('/api/me/', {'store': altro.id, 'is_active': False}, format='json').status_code, 405)
+        account.refresh_from_db()
+        self.assertEqual((account.store_id, account.is_active), (self.negozio.id, True))
+
+        ho = User.objects.create_user(email='ho@x.it', password='Ho-Pwd-5533', cognome='H', nome='O', livello_accesso='ho')
+        admin_ehs = User.objects.create_user(email='ae@x.it', password='x', cognome='A', nome='E', livello_accesso='admin_ehs')
+        c_ho = self._client(self._login(ho.email, 'Ho-Pwd-5533').data['access'])
+        for target in (self.admin, admin_ehs):
+            self.assertEqual(c_ho.patch(f'/api/users/{target.id}/', {'livello_accesso': 'base'}, format='json').status_code, 403)
+            self.assertEqual(c_ho.patch(f'/api/users/{target.id}/', {'email': 'x@x.it'}, format='json').status_code, 403)
+            self.assertEqual(c_ho.delete(f'/api/users/{target.id}/').status_code, 403)
+            target.refresh_from_db()
+            self.assertTrue(target.is_active)
+        self.assertEqual((self.admin.livello_accesso, self.admin.email), ('admin', 'admin@x.it'))
+        self.assertEqual(c_ho.patch(f'/api/users/{self.utente.id}/', {'nome': 'Anna Maria'}, format='json').status_code, 200)
+
+    def test_refresh_restituisce_un_nuovo_token_e_invalida_il_vecchio(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        self.utente.imposta_password_personale(self.NUOVA)
+        self.utente.save()
+        vecchio = str(RefreshToken.for_user(self.utente))
+        r = APIClient().post('/api/auth/refresh/', {'refresh': vecchio}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('refresh', r.data)
+        self.assertEqual(APIClient().post('/api/auth/refresh/', {'refresh': vecchio}, format='json').status_code, 401)
+        self.assertEqual(APIClient().post('/api/auth/refresh/', {'refresh': r.data['refresh']}, format='json').status_code, 200)
+
     def test_modifica_negozio_non_riscrive_la_password(self):
         from stores.views import _sync_store_user
         self.negozio.portale_password = 'Vecchia-Pwd-1'

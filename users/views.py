@@ -52,6 +52,9 @@ def log_audit(actor, azione, target_tipo, target_obj, dettaglio=''):
 
 User = get_user_model()
 
+# Profili che un HO non può modificare né disattivare (es. declassare l'Admin a Base).
+PROFILI_PROTETTI_DA_HO = ('admin', 'admin_ehs')
+
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
@@ -170,14 +173,8 @@ class MeView(APIView):
         serializer = UserDetailSerializer(request.user)
         return Response(serializer.data)
 
-    def patch(self, request):
-        serializer = UserDetailSerializer(request.user, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.validated_data.pop('livello_accesso', None)
-            serializer.validated_data.pop('password', None)  # si cambia solo da /auth/cambia-password/
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    # Nessuna modifica del proprio profilo da qui: workplace, livello, email e stato li
+    # gestiscono Admin/HO/Store da Gestione Account, la password /auth/cambia-password/.
 
 
 class UserListCreateView(generics.ListCreateAPIView):
@@ -226,8 +223,14 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
             return User.objects.filter(store=user.store)
         return User.objects.none()
 
+    def _verifica_profilo_protetto(self, target):
+        from rest_framework.exceptions import PermissionDenied
+        if self.request.user.livello_accesso == 'ho' and target.livello_accesso in PROFILI_PROTETTI_DA_HO:
+            raise PermissionDenied('HO non può modificare o disattivare un profilo Admin o Admin EHS.')
+
     def perform_update(self, serializer):
         from rest_framework.exceptions import ValidationError
+        self._verifica_profilo_protetto(serializer.instance)
         livello_chi_modifica = self.request.user.livello_accesso
         nuovo_livello = serializer.validated_data.get('livello_accesso')
         if nuovo_livello and livello_chi_modifica == 'ho' and nuovo_livello not in ('area', 'base'):
@@ -331,6 +334,7 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
+        self._verifica_profilo_protetto(instance)
         instance.is_active = False
         instance.save()
         log_audit(request.user, 'disattiva', 'utente', instance,
