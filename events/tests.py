@@ -19,6 +19,45 @@ class CatalogoCompletoTest(TestCase):
         self.assertEqual(len(c.get('/api/attivita/').json()), attive)
 
 
+class RichiestaDisattivazioneHOTest(TestCase):
+    def setUp(self):
+        self.att = AttivitaCatalogo.objects.create(nome='Corso da togliere', tipologia='ld')
+        self.ho, self.admin, self.area = APIClient(), APIClient(), APIClient()
+        self.ho.force_authenticate(User.objects.create_user(email='h@x.it', password='x', cognome='H', nome='H', livello_accesso='ho'))
+        self.admin.force_authenticate(User.objects.create_user(email='a@x.it', password='x', cognome='A', nome='A', livello_accesso='admin'))
+        self.area.force_authenticate(User.objects.create_user(email='r@x.it', password='x', cognome='R', nome='R', livello_accesso='area'))
+        self.url = f'/api/attivita/{self.att.id}/richiedi-disattivazione/'
+
+    def _in_attesa(self):
+        return next(a for a in self.admin.get('/api/attivita/').json() if a['id'] == self.att.id)['disattivazione_in_attesa']
+
+    def test_ho_chiede_e_admin_approva(self):
+        self.assertEqual(self.area.post(self.url).status_code, 403)
+        self.assertEqual(self.admin.post(self.url).status_code, 403)
+        self.assertEqual(self.ho.post(self.url).status_code, 201)
+        self.assertEqual(self.ho.post(self.url).status_code, 400)  # già in attesa
+        self.att.refresh_from_db()
+        self.assertTrue(self.att.is_active and self._in_attesa())
+        self.assertEqual(self.ho.get('/api/richieste-disattivazione-attivita/').status_code, 403)
+        richieste = self.admin.get('/api/richieste-disattivazione-attivita/').json()
+        self.assertEqual([(r['attivita_nome'], r['richiedente_nome']) for r in richieste], [('Corso da togliere', 'H H')])
+        url = f"/api/richieste-disattivazione-attivita/{richieste[0]['id']}/"
+        self.assertEqual(self.ho.post(url, {'azione': 'approva'}, format='json').status_code, 403)
+        self.assertEqual(self.admin.post(url, {'azione': 'approva'}, format='json').status_code, 200)
+        self.att.refresh_from_db()
+        self.assertFalse(self.att.is_active)
+        self.assertEqual(self.admin.get('/api/richieste-disattivazione-attivita/').json(), [])
+
+    def test_admin_rifiuta_e_l_attivita_resta(self):
+        self.ho.post(self.url)
+        richiesta = self.admin.get('/api/richieste-disattivazione-attivita/').json()[0]
+        self.admin.post(f"/api/richieste-disattivazione-attivita/{richiesta['id']}/", {'azione': 'rifiuta'}, format='json')
+        self.att.refresh_from_db()
+        self.assertTrue(self.att.is_active)
+        self.assertFalse(self._in_attesa())
+        self.assertEqual(self.ho.post(self.url).status_code, 201)  # si può chiedere di nuovo
+
+
 class DisattivazioneAttivitaTest(TestCase):
     def test_elimina_disattiva_solo_admin_e_conserva_lo_storico(self):
         from datetime import date, time

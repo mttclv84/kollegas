@@ -5,8 +5,13 @@ from rest_framework.filters import OrderingFilter
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import serializers as drf_serializers
-from .models import Host, AttivitaCatalogo, Evento, EccezioneCalendario, NotificaEvento
-from .serializers import HostSerializer, AttivitaCatalogoSerializer, EventoListSerializer, EventoDetailSerializer
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from .models import Host, AttivitaCatalogo, Evento, EccezioneCalendario, NotificaEvento, RichiestaDisattivazioneAttivita
+from .serializers import (
+    HostSerializer, AttivitaCatalogoSerializer, EventoListSerializer, EventoDetailSerializer,
+    RichiestaDisattivazioneAttivitaSerializer,
+)
 from users.accesso import MESSAGGIO_SOLA_VISIONE_EHS, sola_visione_ehs
 from users.permissions import IsAdmin, IsAdminOrHO,IsAdminOrHOEHS, IsAdminOrHOOrArea, IsAdminOrHOOrAreaEHS
 
@@ -40,7 +45,9 @@ class AttivitaCatalogoListCreateView(generics.ListCreateAPIView):
     pagination_class = None  # elenco completo: oltre 50 voci la paginazione nascondeva attività
 
     def get_queryset(self):
-        qs = AttivitaCatalogo.objects.prefetch_related('ruoli_destinatari')
+        from django.db.models import Exists, OuterRef
+        in_attesa = RichiestaDisattivazioneAttivita.objects.filter(attivita=OuterRef('pk'), stato='pending')
+        qs = AttivitaCatalogo.objects.prefetch_related('ruoli_destinatari').annotate(disattivazione_in_attesa=Exists(in_attesa))
         params = self.request.query_params
         if params.get('disattivate'):
             return qs.filter(is_active=False)
@@ -70,6 +77,55 @@ class AttivitaCatalogoDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_destroy(self, instance):
         instance.is_active = False
         instance.save(update_fields=['is_active'])
+        _chiudi_richieste_disattivazione(instance, self.request.user)
+
+
+def _chiudi_richieste_disattivazione(attivita, admin, stato='approvata'):
+    RichiestaDisattivazioneAttivita.objects.filter(attivita=attivita, stato='pending').update(
+        stato=stato, processed_by=admin, processed_at=timezone.now())
+
+
+class RichiediDisattivazioneAttivitaView(APIView):
+    """POST /attivita/<pk>/richiedi-disattivazione/ — l'HO chiede la disattivazione:
+    l'attività resta attiva finché l'Admin non approva."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if request.user.livello_accesso != 'ho':
+            return Response({'detail': 'Solo gli HO inviano la richiesta: l\'Admin disattiva direttamente.'}, status=403)
+        attivita = get_object_or_404(AttivitaCatalogo, pk=pk, is_active=True)
+        richiesta, creata = RichiestaDisattivazioneAttivita.objects.get_or_create(
+            attivita=attivita, stato='pending', defaults={'richiedente': request.user})
+        if not creata:
+            return Response({'detail': 'Disattivazione già in attesa di approvazione.'}, status=400)
+        return Response(RichiestaDisattivazioneAttivitaSerializer(richiesta).data, status=201)
+
+
+class RichiesteDisattivazioneAttivitaView(APIView):
+    """GET — richieste in attesa (solo Admin)."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        qs = RichiestaDisattivazioneAttivita.objects.filter(stato='pending').select_related('attivita', 'richiedente')
+        return Response(RichiestaDisattivazioneAttivitaSerializer(qs, many=True).data)
+
+
+class RichiestaDisattivazioneAttivitaDetailView(APIView):
+    """POST {azione: 'approva'|'rifiuta'} — con 'approva' l'attività viene disattivata."""
+    permission_classes = [IsAdmin]
+
+    def post(self, request, pk):
+        richiesta = get_object_or_404(RichiestaDisattivazioneAttivita.objects.select_related('attivita'),
+                                      pk=pk, stato='pending')
+        azione = request.data.get('azione')
+        if azione not in ('approva', 'rifiuta'):
+            return Response({'detail': 'Azione non valida.'}, status=400)
+        if azione == 'approva':
+            richiesta.attivita.is_active = False
+            richiesta.attivita.save(update_fields=['is_active'])
+        _chiudi_richieste_disattivazione(richiesta.attivita, request.user,
+                                         'approvata' if azione == 'approva' else 'rifiutata')
+        return Response({'ok': True})
 
 
 class EventoListCreateView(generics.ListCreateAPIView):

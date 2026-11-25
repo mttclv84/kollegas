@@ -77,3 +77,60 @@ class CompletamentoZoomTest(TestCase):
         Iscrizione.objects.create(evento=ev2, user=anna, stato='iscritto')
         r = c.get(f'/api/stores/{negozio.id}/completamento/zoom/').json()
         self.assertEqual(r['utenti'][0]['iscritti'], {str(corso2.id): '2026-12-03'})
+
+
+class ProgrammiCompletamentoTest(TestCase):
+    """DM Leadership: target i Department Manager, le due aule contano anche come percorso unico."""
+
+    def setUp(self):
+        from datetime import date, time
+        from events.models import AttivitaCatalogo, Evento, Host
+        from participants.models import Iscrizione
+        from users.models import Role
+        from .models import Area
+
+        self.negozio = Store.objects.create(nome='Firenze', comune='Firenze', provincia='FI', email_store='fi@x.it')
+        Area.objects.create(numero=1).stores.add(self.negozio)
+        dm = Role.objects.create(nome='Department Manager')
+        anna = User.objects.create_user(email='a@x.it', password='x', cognome='Rossi', nome='Anna', store=self.negozio, ruolo=dm)
+        bruno = User.objects.create_user(email='b@x.it', password='x', cognome='Verdi', nome='Bruno', store=self.negozio, ruolo=dm)
+        tm = User.objects.create_user(email='t@x.it', password='x', cognome='Neri', nome='Tea', store=self.negozio,
+                                      ruolo=Role.objects.create(nome='Team Manager'))
+        host = Host.objects.create(descrizione='T', posizione='interno')
+        aule = []
+        for n, giorno in (('1/2', date(2026, 3, 1)), ('2/2', date(2026, 12, 20))):
+            attivita = AttivitaCatalogo.objects.create(nome=f'DM Leadership - Aula {n}', tipologia='ld')
+            aule.append(Evento.objects.create(data=giorno, ora_inizio=time(9), ora_fine=time(17), attivita=attivita, host=host))
+        self.aula2 = aule[1].attivita
+        for utente, evento, stato in ((anna, aule[0], 'partecipato'), (anna, aule[1], 'partecipato'),
+                                      (bruno, aule[0], 'partecipato'), (bruno, aule[1], 'iscritto'),
+                                      (tm, aule[0], 'partecipato')):
+            Iscrizione.objects.create(evento=evento, user=utente, stato=stato)
+        self.anna = anna
+        self.c = APIClient()
+        self.c.force_authenticate(User.objects.create_user(email='ad@x.it', password='x', cognome='A', nome='D',
+                                                           livello_accesso='admin'))
+
+    def _riassunto(self, corsi):
+        return [(c['nome_breve'], c['completato'], c['in_procinto'], c['totale']) for c in corsi]
+
+    def test_negozio_italia_e_area(self):
+        atteso = [('Aula 1/2', 2, 0, 2), ('Aula 2/2', 1, 1, 2), ('Percorso completo', 1, 1, 2)]
+        params = {'programma': 'dm-leadership'}
+        negozio = self.c.get(f'/api/stores/{self.negozio.id}/completamento/', params).json()
+        self.assertEqual(self._riassunto(negozio['corsi']), atteso)
+        self.assertEqual(negozio['corsi'][2]['ruoli'][0]['etichetta'], 'DM')
+        italia = self.c.get('/api/completamento/italia/', params).json()
+        self.assertEqual(self._riassunto(italia['italia']), atteso)
+        self.assertEqual(self._riassunto(italia['aree'][0]['corsi']), atteso)
+        area = self.c.get('/api/completamento/area/1/', params).json()
+        self.assertEqual(self._riassunto(area['stores'][0]['corsi']), atteso)
+        self.assertEqual(area['stores'][0]['total_untrained'], 1)  # solo Bruno, per l'aula 2/2
+
+    def test_zoom_e_programma_sconosciuto(self):
+        r = self.c.get(f'/api/stores/{self.negozio.id}/completamento/zoom/', {'programma': 'dm-leadership'}).json()
+        self.assertEqual([u['cognome'] for u in r['utenti']], ['Rossi', 'Verdi'])
+        self.assertIn('percorso', r['utenti'][0]['fatti'])
+        self.assertNotIn('percorso', r['utenti'][1]['fatti'])
+        self.assertEqual(r['utenti'][1]['iscritti'], {str(self.aula2.id): '2026-12-20'})
+        self.assertEqual(self.c.get('/api/completamento/italia/', {'programma': 'altro'}).status_code, 404)

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Host, AttivitaCatalogo, Evento
+from .models import Host, AttivitaCatalogo, Evento, RichiestaDisattivazioneAttivita
 
 
 class HostSerializer(serializers.ModelSerializer):
@@ -11,14 +11,31 @@ class HostSerializer(serializers.ModelSerializer):
 
 class AttivitaCatalogoSerializer(serializers.ModelSerializer):
     ruoli_destinatari_nomi = serializers.SerializerMethodField()
+    disattivazione_in_attesa = serializers.SerializerMethodField()
 
     class Meta:
         model = AttivitaCatalogo
-        fields = ['id', 'nome', 'tipologia', 'dettaglio', 'ruoli_destinatari', 'ruoli_destinatari_nomi', 'is_active', 'created_at']
+        fields = ['id', 'nome', 'tipologia', 'dettaglio', 'ruoli_destinatari', 'ruoli_destinatari_nomi', 'is_active',
+                  'created_at', 'disattivazione_in_attesa']
         read_only_fields = ['created_at']
 
     def get_ruoli_destinatari_nomi(self, obj):
         return list(obj.ruoli_destinatari.values_list('nome', flat=True))
+
+    def get_disattivazione_in_attesa(self, obj):
+        annotato = getattr(obj, 'disattivazione_in_attesa', None)
+        if annotato is not None:
+            return annotato
+        return obj.richieste_disattivazione.filter(stato='pending').exists()
+
+
+class RichiestaDisattivazioneAttivitaSerializer(serializers.ModelSerializer):
+    attivita_nome = serializers.CharField(source='attivita.nome', read_only=True)
+    richiedente_nome = serializers.CharField(source='richiedente.nome_completo', read_only=True, default='')
+
+    class Meta:
+        model = RichiestaDisattivazioneAttivita
+        fields = ['id', 'attivita', 'attivita_nome', 'richiedente_nome', 'stato', 'created_at']
 
 
 class EventoListSerializer(serializers.ModelSerializer):

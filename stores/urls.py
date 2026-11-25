@@ -1,5 +1,6 @@
 from django.urls import path
-from .views import StoreListCreateView, StoreDetailView, StoreClusterView, MappingView, CompletamentoView, CompletamentoZoomView, AreaListView, AreaDetailView, CompletamentoItaliaView, CompletamentoAreaDetailView
+from .completamento import CompletamentoAreaDetailView, CompletamentoItaliaView, CompletamentoView, CompletamentoZoomView
+from .views import StoreListCreateView, StoreDetailView, StoreClusterView, MappingView, AreaListView, AreaDetailView
 
 urlpatterns = [
     path('stores/', StoreListCreateView.as_view(), name='store-list'),

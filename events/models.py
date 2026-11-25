@@ -66,6 +66,27 @@ class AttivitaCatalogo(models.Model):
         return self.nome
 
 
+class RichiestaDisattivazioneAttivita(models.Model):
+    """L'HO chiede di disattivare un'attività del catalogo; la disattiva l'Admin approvando."""
+    STATO_CHOICES = [('pending', 'In attesa'), ('approvata', 'Approvata'), ('rifiutata', 'Rifiutata')]
+
+    attivita = models.ForeignKey(AttivitaCatalogo, on_delete=models.CASCADE, related_name='richieste_disattivazione')
+    richiedente = models.ForeignKey('users.User', null=True, on_delete=models.SET_NULL,
+                                    related_name='richieste_disattivazione_attivita')
+    stato = models.CharField(max_length=10, choices=STATO_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_by = models.ForeignKey('users.User', null=True, blank=True, on_delete=models.SET_NULL,
+                                     related_name='disattivazioni_attivita_gestite')
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['attivita'], condition=Q(stato='pending'),
+                                    name='una_disattivazione_in_attesa_per_attivita'),
+        ]
+
+
 class Evento(models.Model):
     data = models.DateField()
     ora_inizio = models.TimeField()
