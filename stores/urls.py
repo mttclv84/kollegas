@@ -1,5 +1,5 @@
 from django.urls import path
-from .completamento import CompletamentoAreaDetailView, CompletamentoItaliaView, CompletamentoView, CompletamentoZoomView
+from .completamento import CompletamentoAreaDetailView, CompletamentoAreaPersoneView, CompletamentoItaliaView, CompletamentoView, CompletamentoZoomView
 from .views import StoreListCreateView, StoreDetailView, StoreClusterView, MappingView, AreaListView, AreaDetailView
 
 urlpatterns = [
@@ -13,4 +13,5 @@ urlpatterns = [
     path('aree/<int:pk>/', AreaDetailView.as_view(), name='area-detail'),
     path('completamento/italia/', CompletamentoItaliaView.as_view(), name='completamento-italia'),
     path('completamento/area/<int:numero>/', CompletamentoAreaDetailView.as_view(), name='completamento-area'),
+    path('completamento/area/<int:numero>/persone/', CompletamentoAreaPersoneView.as_view(), name='completamento-area-persone'),
 ]

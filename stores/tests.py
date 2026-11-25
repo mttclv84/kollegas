@@ -134,3 +134,17 @@ class ProgrammiCompletamentoTest(TestCase):
         self.assertNotIn('percorso', r['utenti'][1]['fatti'])
         self.assertEqual(r['utenti'][1]['iscritti'], {str(self.aula2.id): '2026-12-20'})
         self.assertEqual(self.c.get('/api/completamento/italia/', {'programma': 'altro'}).status_code, 404)
+
+    def test_elenco_persone_dell_area(self):
+        url = '/api/completamento/area/1/persone/'
+        r = self.c.get(url, {'programma': 'dm-leadership'}).json()
+        self.assertEqual([c['nome_breve'] for c in r['corsi']], ['Aula 1/2', 'Aula 2/2', 'Percorso completo'])
+        self.assertEqual([(p['cognome'], p['negozio'], p['ruolo']) for p in r['persone']],
+                         [('Rossi', 'Firenze', 'DM'), ('Verdi', 'Firenze', 'DM')])  # solo il target, non la TM
+        self.assertIn('percorso', r['persone'][0]['fatti'])
+        self.assertNotIn('percorso', r['persone'][1]['fatti'])
+        for livello, atteso in (('ho', 200), ('area', 200), ('admin_ehs', 403), ('store', 403)):
+            c = APIClient()
+            c.force_authenticate(User.objects.create_user(email=f'{livello}@y.it', password='x', cognome='X', nome='Y',
+                                                          livello_accesso=livello))
+            self.assertEqual(c.get(url).status_code, atteso, livello)

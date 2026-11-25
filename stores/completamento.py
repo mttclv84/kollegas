@@ -7,7 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from users.permissions import IsAdminOrHOOrAreaEHS
+from users.permissions import IsAdminOrHOOrArea, IsAdminOrHOOrAreaEHS
 
 from .models import Area, Store
 
@@ -64,7 +64,7 @@ def nome_breve(nome):
 def utenti_target(programma, **filtri):
     from users.models import User
     return list(User.objects.filter(is_active=True, ruolo__nome__in=programma['ruoli'], **filtri)
-                .select_related('ruolo').order_by('ruolo__nome', 'cognome', 'nome'))
+                .select_related('ruolo', 'store').order_by('ruolo__nome', 'cognome', 'nome'))
 
 
 def _trova_attivita(nomi):
@@ -224,4 +224,32 @@ class CompletamentoAreaDetailView(APIView):
             'area_manager_retail': area.area_manager_retail,
             'area_bp': area.area_bp,
             'stores': stores_result,
+        })
+
+
+class CompletamentoAreaPersoneView(APIView):
+    """GET /completamento/area/<numero>/persone/ — tutti gli aventi diritto dell'area, con
+    il negozio e, per ogni formazione del programma, se l'hanno fatta. Solo visualizzazione,
+    per Admin, HO e Area Manager."""
+    permission_classes = [IsAdminOrHOOrArea]
+
+    def get(self, request, numero):
+        info, programma = programma_richiesto(request)
+        area = get_object_or_404(Area.objects.prefetch_related('stores'), numero=numero)
+        negozi = list(area.stores.filter(is_active=True))
+        utenti = sorted(utenti_target(programma, store__in=negozi),
+                        key=lambda u: ((u.store.codice_store or u.store.nome) if u.store else '', u.cognome, u.nome))
+        attivita, percorso = struttura_programma(programma)
+        voci = voci_programma(attivita, [u.id for u in utenti], percorso)
+        return Response({
+            'programma': info,
+            'numero': area.numero,
+            'corsi': [{'id': v['id'], 'nome_breve': v['nome_breve'], 'percorso': v['percorso']} for v in voci],
+            'persone': [{
+                'id': u.id, 'cognome': u.cognome, 'nome': u.nome,
+                'ruolo': ETICHETTE_BREVI.get(u.ruolo.nome, u.ruolo.nome),
+                'negozio': u.store.nome if u.store else '',
+                'codice_negozio': u.store.codice_store if u.store else '',
+                'fatti': [v['id'] for v in voci if u.id in v['fatti']],
+            } for u in utenti],
         })
