@@ -295,8 +295,8 @@ class UnisciGiornateTest(TestCase):
         persona = User.objects.create_user(email='p@x.it', password='x', cognome='P', nome='P')
         for g in giorni:
             Iscrizione.objects.create(evento=g, user=persona, stato='partecipato')
-        argomenti = dict(origine='GWU TM-DM Leadership Proram', date=['2025-03-11', '2025-03-12'],
-                         destinazione='GWU TM-DM - Leadership', rinomina='GWU TM-DM Leadership Program')
+        argomenti = dict(origine=['GWU TM-DM Leadership Proram'], date=['2025-03-11', '2025-03-12'],
+                         destinazione='GWU TM-DM - Leadership', rinomina='GWU TM-DM Leadership')
 
         call_command('unisci_giornate', stdout=StringIO(), **argomenti)
         corso.refresh_from_db()
@@ -306,11 +306,26 @@ class UnisciGiornateTest(TestCase):
         corso.refresh_from_db()
         for g in giorni:
             g.refresh_from_db()
-        self.assertEqual(corso.nome, 'GWU TM-DM Leadership Program')
+        self.assertEqual(corso.nome, 'GWU TM-DM Leadership')
         self.assertEqual({g.attivita_id for g in giorni}, {corso.id})
         self.assertEqual(len({g.edizione_id for g in giorni}), 1)
         self.assertIn('1 persone, 0 parziali', out.getvalue())
+        # Giornate future divise tra due attività con nomi diversi: diventano un'edizione unica.
+        aula1 = AttivitaCatalogo.objects.create(nome='GWU TM-DM - Leadership - Aula 1/2', tipologia='ld')
+        aula2 = AttivitaCatalogo.objects.create(nome='GWU TM-DM Leadership Program aula 2/2', tipologia='ld')
+        g13 = Evento.objects.create(data=date(2027, 1, 13), ora_inizio=time(9), ora_fine=time(17), attivita=aula1, host=host)
+        g14 = Evento.objects.create(data=date(2027, 1, 14), ora_inizio=time(9), ora_fine=time(17), attivita=aula2, host=host)
+        out = StringIO()
+        call_command('unisci_giornate', origine=[aula1.nome, aula2.nome], date=['2027-01-13', '2027-01-14'],
+                     destinazione='GWU TM-DM Leadership', applica=True, stdout=out)
+        g13.refresh_from_db()
+        g14.refresh_from_db()
+        aula1.refresh_from_db()
+        aula2.refresh_from_db()
+        self.assertEqual((g13.edizione_id, g13.attivita_id, g14.attivita_id), (g14.edizione_id, corso.id, corso.id))
+        self.assertFalse(aula1.is_active or aula2.is_active)
+        self.assertIn('Disattivate (vuote)', out.getvalue())
         with self.assertRaises(CommandError):  # già unite: non si rifà
-            call_command('unisci_giornate', stdout=StringIO(), **{**argomenti, 'origine': 'GWU TM-DM Leadership Program',
-                                                                   'destinazione': 'GWU TM-DM Leadership Program',
+            call_command('unisci_giornate', stdout=StringIO(), **{**argomenti, 'origine': ['GWU TM-DM Leadership'],
+                                                                   'destinazione': 'GWU TM-DM Leadership',
                                                                    'rinomina': None})
