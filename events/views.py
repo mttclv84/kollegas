@@ -164,11 +164,45 @@ class EventoListCreateView(generics.ListCreateAPIView):
             return [IsAdminOrHOEHS()]
         return [IsAuthenticated()]
 
+    def _giornate_aggiuntive(self, prima_data):
+        """Altre giornate della stessa formazione: [{data, ora_inizio, ora_fine}, ...]."""
+        grezze = self.request.data.get('giornate') or []
+        if not isinstance(grezze, list):
+            raise drf_serializers.ValidationError({'detail': 'Giornate non valide.'})
+        campo_data, campo_ora = drf_serializers.DateField(), drf_serializers.TimeField()
+        giornate, date_viste = [], {prima_data}
+        for i, g in enumerate(grezze, start=2):
+            try:
+                giornata = {'data': campo_data.to_internal_value(g.get('data')),
+                            'ora_inizio': campo_ora.to_internal_value(g.get('ora_inizio')),
+                            'ora_fine': campo_ora.to_internal_value(g.get('ora_fine'))}
+            except (drf_serializers.ValidationError, AttributeError):
+                raise drf_serializers.ValidationError({'detail': f'Giornata {i}: indica data, ora di inizio e ora di fine.'})
+            if giornata['ora_fine'] <= giornata['ora_inizio']:
+                raise drf_serializers.ValidationError({'detail': f'Giornata {i}: l\'ora di fine deve essere dopo l\'inizio.'})
+            if giornata['data'] in date_viste:
+                raise drf_serializers.ValidationError({'detail': f'Giornata {i}: c\'è già una giornata in questa data.'})
+            date_viste.add(giornata['data'])
+            giornate.append(giornata)
+        return giornate
+
     def perform_create(self, serializer):
+        from django.db import transaction
+        from .edizioni import CAMPI_COMUNI
+        from .models import Edizione
         dati = serializer.validated_data
         if sola_visione_ehs(self.request.user) and (dati.get('is_ehs') or dati['attivita'].tipologia == 'ehs'):
             self.permission_denied(self.request, message=MESSAGGIO_SOLA_VISIONE_EHS)
-        super().perform_create(serializer)
+        giornate = self._giornate_aggiuntive(dati['data'])
+        with transaction.atomic():
+            super().perform_create(serializer)
+            if giornate:
+                evento = serializer.instance
+                evento.edizione = Edizione.objects.create(created_by=self.request.user)
+                evento.save(update_fields=['edizione', 'ore_totali'])
+                comuni = {campo: getattr(evento, campo) for campo in CAMPI_COMUNI}
+                for giornata in giornate:
+                    Evento.objects.create(edizione=evento.edizione, created_by=self.request.user, **comuni, **giornata)
         actor = self.request.user
         if actor.livello_accesso in ('admin', 'admin_ehs', 'ho'):
             evento = serializer.instance
@@ -228,7 +262,15 @@ class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
         if sola_visione_ehs(self.request.user) and (
                 serializer.instance.is_ehs or dati.get('is_ehs') or attivita.tipologia == 'ehs'):
             self.permission_denied(self.request, message=MESSAGGIO_SOLA_VISIONE_EHS)
-        serializer.save()
+        evento = serializer.save()
+        if evento.edizione_id:
+            # Le giornate di un'edizione sono sempre uguali: cambiano solo data e orari.
+            from .edizioni import CAMPI_COMUNI
+            comuni = {campo: getattr(evento, campo) for campo in CAMPI_COMUNI}
+            for giornata in Evento.objects.filter(edizione_id=evento.edizione_id).exclude(pk=evento.pk):
+                for campo, valore in comuni.items():
+                    setattr(giornata, campo, valore)
+                giornata.save()
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -247,7 +289,13 @@ class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
             snap_motivazione=motivazione,
         )
         notifica.letta_da.add(request.user)
-        instance.delete()
+        # Annullare una giornata annulla l'intera edizione: una formazione a metà non esiste.
+        if instance.edizione_id:
+            edizione = instance.edizione
+            Evento.objects.filter(edizione=edizione).delete()
+            edizione.delete()
+        else:
+            instance.delete()
         return Response(status=204)
 
 

@@ -562,41 +562,36 @@ def _compute_stats(query_params):
     if data_a:
         eventi_qs = eventi_qs.filter(data__lte=data_a)
 
-    ore_q = list(
-        eventi_qs
-        .values('attivita_id', 'attivita__nome')
-        .annotate(
-            ore=Coalesce(Sum('ore_totali'), 0, output_field=FloatField()),
-            edizioni=Count('id'),
-        )
-    )
+    from django.db.models import Q
+    from events.edizioni import PARTECIPATO, chiave, esiti_partecipazione
 
-    def part_by_sesso(sesso):
-        return dict(
-            Iscrizione.objects.filter(
-                evento__in=eventi_qs, stato='partecipato', user__sesso=sesso
-            ).values('evento__attivita_id')
-            .annotate(n=Count('id'))
-            .values_list('evento__attivita_id', 'n')
-        )
+    # Un'edizione su più giornate conta una volta sola (edizioni, modalità, partecipanti);
+    # un evento di una giornata è un'edizione a sé.
+    per_attivita = {}
+    for e in eventi_qs:
+        voce = per_attivita.setdefault(e.attivita_id, {'nome': e.attivita.nome, 'edizioni': set(),
+                                                       'modalita': defaultdict(set)})
+        k = chiave(e.id, e.edizione_id)
+        voce['edizioni'].add(k)
+        voce['modalita'][e.modalita_partecipazione].add(k)
+    chiavi_valide = set().union(*(v['edizioni'] for v in per_attivita.values()))
+    edizioni_ids = {k[1] for k in chiavi_valide if k[0] == 'ed'}
 
-    def mod_count(mod):
-        return dict(
-            eventi_qs.filter(modalita_partecipazione=mod)
-            .values('attivita_id').annotate(n=Count('id'))
-            .values_list('attivita_id', 'n')
-        )
-
+    # Partecipante = presente a tutte le giornate dell'edizione (i "parziali" non contano).
+    esiti = esiti_partecipazione(Iscrizione.objects.filter(
+        Q(evento__in=eventi_qs) | Q(evento__edizione_id__in=edizioni_ids)))
+    sessi = dict(User.objects.filter(id__in={u for u, _ in esiti}).values_list('id', 'sesso'))
     # Chi non ha il sesso indicato (N.S. o vuoto) viene conteggiato tra le donne.
-    maschi_map   = part_by_sesso('M')
-    femmine_map  = part_by_sesso('F')
-    for att_id, n in part_by_sesso('NS').items():
-        femmine_map[att_id] = femmine_map.get(att_id, 0) + n
-    presenza_map = mod_count('presenza')
-    online_map   = mod_count('online')
-    blended_map  = mod_count('blended')
+    maschi_map, femmine_map = defaultdict(int), defaultdict(int)
+    for (user_id, k), (esito_persona, att_id) in esiti.items():
+        if esito_persona != PARTECIPATO or k not in chiavi_valide:
+            continue
+        if sessi.get(user_id) == 'M':
+            maschi_map[att_id] += 1
+        else:
+            femmine_map[att_id] += 1
 
-    # Person-hours per gender: ore_evento * n_partecipanti_M/F
+    # Ore-persona: ore di ogni giornata x presenti a quella giornata (anche se parziali).
     event_data = {e.id: (float(e.ore_totali or 0), e.attivita_id) for e in eventi_qs}
     ore_maschi_map = defaultdict(float)
     ore_femmine_map = defaultdict(float)
@@ -612,12 +607,11 @@ def _compute_stats(query_params):
             ore_femmine_map[att_id] += ore_ev * g['n']
 
     result = []
-    for row in ore_q:
-        att_id = row['attivita_id']
+    for att_id, voce in per_attivita.items():
         result.append({
             'attivita_id': att_id,
-            'attivita_nome': row['attivita__nome'],
-            'num_edizioni': row['edizioni'],
+            'attivita_nome': voce['nome'],
+            'num_edizioni': len(voce['edizioni']),
             # Ore erogate = ore della formazione x persone presenti (ore-persona).
             'ore_erogate': round(ore_maschi_map.get(att_id, 0) + ore_femmine_map.get(att_id, 0), 2),
             'maschi': maschi_map.get(att_id, 0),
@@ -625,9 +619,9 @@ def _compute_stats(query_params):
             'femmine': femmine_map.get(att_id, 0),
             'ore_femmine': round(ore_femmine_map.get(att_id, 0), 2),
             'ns': 0,
-            'presenza': presenza_map.get(att_id, 0),
-            'online': online_map.get(att_id, 0),
-            'blended': blended_map.get(att_id, 0),
+            'presenza': len(voce['modalita']['presenza']),
+            'online': len(voce['modalita']['online']),
+            'blended': len(voce['modalita']['blended']),
         })
 
     result.sort(key=lambda x: x['attivita_nome'])

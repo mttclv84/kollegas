@@ -22,17 +22,21 @@ PROGRAMMI = {
         ],
         'percorso': False,
     },
+    # Corso unico su più giornate (aule accorpate con il comando accorpa_aule). Finché
+    # l'accorpamento non è applicato si usano le vecchie aule, unite nel "percorso completo".
     'dm-leadership': {
         'titolo': 'DM Leadership',
         'ruoli': ['Department Manager'],
-        'corsi': ['DM Leadership - Aula 1/2', 'DM Leadership - Aula 2/2'],
-        'percorso': True,
+        'corsi': ['DM Leadership'],
+        'corsi_precedenti': ['DM Leadership - Aula 1/2', 'DM Leadership - Aula 2/2'],
+        'percorso': False,
     },
     'gwu-tm-dm': {
         'titolo': 'GWU TM-DM Leadership',
         'ruoli': ['Department Manager'],
-        'corsi': ['GWU TM-DM - Leadership - Aula 1/2', 'GWU TM-DM - Leadership - Aula 2/2'],
-        'percorso': True,
+        'corsi': ['GWU TM-DM - Leadership'],
+        'corsi_precedenti': ['GWU TM-DM - Leadership - Aula 1/2', 'GWU TM-DM - Leadership - Aula 2/2'],
+        'percorso': False,
     },
 }
 PROGRAMMA_PREDEFINITO = 'gwu-ratm'
@@ -62,30 +66,44 @@ def utenti_target(programma, **filtri):
                 .select_related('ruolo').order_by('ruolo__nome', 'cognome', 'nome'))
 
 
-def attivita_del_programma(programma):
+def _trova_attivita(nomi):
     from events.models import AttivitaCatalogo
-    trovate = {a.nome: a for a in AttivitaCatalogo.objects.filter(nome__in=programma['corsi'])}
-    return [trovate[n] for n in programma['corsi'] if n in trovate]
+    trovate = {a.nome: a for a in AttivitaCatalogo.objects.filter(nome__in=nomi)}
+    return [trovate[n] for n in nomi if n in trovate]
 
 
-def voci_programma(programma, attivita, user_ids):
-    """Per ogni aula: chi l'ha svolta e chi è iscritto a un'aula non ancora svolta."""
+def struttura_programma(programma):
+    """(attività, percorso): le attività del programma e se unirle nel percorso completo."""
+    attivita = _trova_attivita(programma['corsi'])
+    if attivita or not programma.get('corsi_precedenti'):
+        return attivita, programma['percorso']
+    return _trova_attivita(programma['corsi_precedenti']), True
+
+
+def voci_programma(attivita, user_ids, percorso):
+    """Per ogni attività: chi l'ha completata, chi è iscritto a un'edizione non ancora
+    svolta e chi è "parziale" (non presente a tutte le giornate: non conta come fatto)."""
+    from events.edizioni import ISCRITTO, PARTECIPATO, PARZIALE, esiti_partecipazione, iscrizioni_complete
     from participants.models import Iscrizione
-    fatti = {a.id: set() for a in attivita}
-    iscritti = {a.id: set() for a in attivita}
-    for uid, aid, stato in Iscrizione.objects.filter(
-        evento__attivita__in=attivita, user_id__in=user_ids, stato__in=('partecipato', 'iscritto'),
-    ).values_list('user_id', 'evento__attivita_id', 'stato'):
-        (fatti if stato == 'partecipato' else iscritti)[aid].add(uid)
-    voci = [{'id': a.id, 'nome': a.nome, 'nome_breve': nome_breve(a.nome), 'percorso': False,
-             'fatti': fatti[a.id], 'iscritti': iscritti[a.id] - fatti[a.id]} for a in attivita]
-    if programma['percorso'] and len(voci) > 1:
+    gruppi = {PARTECIPATO: {a.id: set() for a in attivita}, ISCRITTO: {a.id: set() for a in attivita},
+              PARZIALE: {a.id: set() for a in attivita}}
+    iscrizioni = iscrizioni_complete(Iscrizione.objects.filter(evento__attivita__in=attivita, user_id__in=user_ids))
+    for (user_id, _), (esito, att_id) in esiti_partecipazione(iscrizioni).items():
+        if esito in gruppi and att_id in gruppi[esito]:
+            gruppi[esito][att_id].add(user_id)
+    voci = []
+    for a in attivita:
+        fatti = gruppi[PARTECIPATO][a.id]
+        iscritti = gruppi[ISCRITTO][a.id] - fatti
+        voci.append({'id': a.id, 'nome': a.nome, 'nome_breve': nome_breve(a.nome), 'percorso': False,
+                     'fatti': fatti, 'iscritti': iscritti, 'parziali': gruppi[PARZIALE][a.id] - fatti - iscritti})
+    if percorso and len(voci) > 1:
         # Completo = tutte le aule svolte; in procinto = ogni aula mancante ha già un'iscrizione.
         completi = set.intersection(*(v['fatti'] for v in voci))
         coperti = set.intersection(*(v['fatti'] | v['iscritti'] for v in voci))
-        voci.append({'id': ID_PERCORSO, 'nome': f"{programma['titolo']} — percorso completo",
+        voci.append({'id': ID_PERCORSO, 'nome': 'Percorso completo',
                      'nome_breve': 'Percorso completo', 'percorso': True,
-                     'fatti': completi, 'iscritti': coperti - completi})
+                     'fatti': completi, 'iscritti': coperti - completi, 'parziali': set()})
     return voci
 
 
@@ -94,7 +112,8 @@ def conteggi(voci, utenti, ruoli):
     tutti = set().union(*(ids for _, ids in per_ruolo))
 
     def blocco(voce, ids):
-        return {'completato': len(voce['fatti'] & ids), 'in_procinto': len(voce['iscritti'] & ids), 'totale': len(ids)}
+        return {'completato': len(voce['fatti'] & ids), 'in_procinto': len(voce['iscritti'] & ids),
+                'parziali': len(voce['parziali'] & ids), 'totale': len(ids)}
 
     risultato = []
     for voce in voci:
@@ -114,7 +133,8 @@ class CompletamentoView(APIView):
         info, programma = programma_richiesto(request)
         store = get_object_or_404(Store, pk=store_id, is_active=True)
         utenti = utenti_target(programma, store=store)
-        voci = voci_programma(programma, attivita_del_programma(programma), [u.id for u in utenti])
+        attivita, percorso = struttura_programma(programma)
+        voci = voci_programma(attivita, [u.id for u in utenti], percorso)
         return Response({'programma': info, 'store': {'id': store.id, 'nome': store.nome},
                          'corsi': conteggi(voci, utenti, programma['ruoli'])})
 
@@ -131,8 +151,8 @@ class CompletamentoZoomView(APIView):
             return Response({'detail': 'Non autorizzato.'}, status=403)
         store = get_object_or_404(Store, pk=store_id, is_active=True)
         utenti = utenti_target(programma, store=store)
-        attivita = attivita_del_programma(programma)
-        voci = voci_programma(programma, attivita, [u.id for u in utenti])
+        attivita, percorso = struttura_programma(programma)
+        voci = voci_programma(attivita, [u.id for u in utenti], percorso)
         # Iscritti a un'aula non ancora svolta: data dell'aula, mostrata al posto del trattino.
         date_iscrizione = {}
         for user_id, att_id, data in Iscrizione.objects.filter(
@@ -146,6 +166,7 @@ class CompletamentoZoomView(APIView):
             'utenti': [{
                 'id': u.id, 'cognome': u.cognome, 'nome': u.nome, 'ruolo': u.ruolo.nome,
                 'fatti': [v['id'] for v in voci if u.id in v['fatti']],
+                'parziali': [v['id'] for v in voci if u.id in v['parziali']],
                 'iscritti': {v['id']: date_iscrizione[(u.id, v['id'])] for v in voci
                              if (u.id, v['id']) in date_iscrizione and u.id not in v['fatti']},
             } for u in utenti],
@@ -158,7 +179,8 @@ class CompletamentoItaliaView(APIView):
     def get(self, request):
         info, programma = programma_richiesto(request)
         utenti = utenti_target(programma)
-        voci = voci_programma(programma, attivita_del_programma(programma), [u.id for u in utenti])
+        attivita, percorso = struttura_programma(programma)
+        voci = voci_programma(attivita, [u.id for u in utenti], percorso)
         aree = []
         for area in Area.objects.prefetch_related('stores').all():
             negozi = set(area.stores.values_list('id', flat=True))
@@ -179,7 +201,8 @@ class CompletamentoAreaDetailView(APIView):
         area = get_object_or_404(Area.objects.prefetch_related('stores'), numero=numero)
         negozi = list(area.stores.filter(is_active=True))
         utenti = utenti_target(programma, store__in=negozi)
-        voci = voci_programma(programma, attivita_del_programma(programma), [u.id for u in utenti])
+        attivita, percorso = struttura_programma(programma)
+        voci = voci_programma(attivita, [u.id for u in utenti], percorso)
 
         stores_result = []
         for store in negozi:

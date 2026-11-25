@@ -124,3 +124,156 @@ class PausaPranzoTest(TestCase):
         self.assertEqual(self._ore((14, 0), (15, 0)), 1.0)   # pomeriggio: nessuna pausa
         self.assertEqual(self._ore((9, 0), (13, 0)), 4.0)
         self.assertEqual(self._ore((9, 0), (18, 0)), 8.0)    # giornata intera: meno un'ora
+
+
+class EdizioneMultiGiornataTest(TestCase):
+    """Formazione su più giornate: un salvataggio, una iscrizione, una sola partecipazione."""
+
+    def setUp(self):
+        from .models import Host
+        self.att = AttivitaCatalogo.objects.create(nome='DM Leadership', tipologia='ld')
+        self.host = Host.objects.create(descrizione='Trainer', posizione='interno')
+        self.altro_host = Host.objects.create(descrizione='Altro', posizione='interno')
+        self.admin = APIClient()
+        self.admin.force_authenticate(User.objects.create_user(email='a@x.it', password='x', cognome='A', nome='A',
+                                                               livello_accesso='admin'))
+
+    def _crea(self, giornate, data='2027-03-01'):
+        return self.admin.post('/api/eventi/', {
+            'data': data, 'ora_inizio': '09:00', 'ora_fine': '17:00', 'attivita': self.att.id, 'host': self.host.id,
+            'location_esterna': 'Milano', 'max_partecipanti': 10, 'giornate': giornate}, format='json')
+
+    def _edizione(self):
+        from .models import Evento
+        r = self._crea([{'data': '2027-03-02', 'ora_inizio': '09:00', 'ora_fine': '13:00'},
+                        {'data': '2027-03-05', 'ora_inizio': '14:00', 'ora_fine': '18:00'}])
+        self.assertEqual(r.status_code, 201, r.content)
+        return list(Evento.objects.filter(edizione__isnull=False).order_by('data'))
+
+    def test_un_salvataggio_crea_tutte_le_giornate(self):
+        giornate = self._edizione()
+        self.assertEqual(len(giornate), 3)
+        self.assertEqual(len({g.edizione_id for g in giornate}), 1)
+        self.assertEqual([float(g.ore_totali) for g in giornate], [7.0, 4.0, 4.0])
+        self.assertEqual({(g.host_id, g.location_esterna, g.max_partecipanti) for g in giornate},
+                         {(self.host.id, 'Milano', 10)})
+        elenco = self.admin.get('/api/eventi/', {'data_da': '2027-03-01', 'data_a': '2027-03-31'}).json()
+        elenco = elenco['results'] if isinstance(elenco, dict) else elenco
+        self.assertEqual([(e['giornata'], e['giornate_totali']) for e in elenco], [(1, 3), (2, 3), (3, 3)])
+        dettaglio = self.admin.get(f'/api/eventi/{giornate[1].id}/').json()
+        self.assertEqual([g['id'] for g in dettaglio['giornate']], [g.id for g in giornate])
+
+    def test_giornate_non_valide(self):
+        from .models import Evento
+        self.assertEqual(self._crea([{'data': '2027-03-01', 'ora_inizio': '09:00', 'ora_fine': '13:00'}]).status_code, 400)
+        self.assertEqual(self._crea([{'data': '2027-03-02', 'ora_inizio': '13:00', 'ora_fine': '09:00'}]).status_code, 400)
+        self.assertEqual(self._crea([{'data': '2027-03-02'}]).status_code, 400)
+        self.assertFalse(Evento.objects.exists())
+
+    def test_iscrizione_e_cancellazione_valgono_per_tutte_le_giornate(self):
+        from participants.models import Iscrizione
+        giornate = self._edizione()
+        persona = User.objects.create_user(email='p@x.it', password='x', cognome='P', nome='P')
+        r = self.admin.post('/api/iscrizioni/', {'evento': giornate[0].id, 'user': persona.id, 'stato': 'iscritto'},
+                            format='json')
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(Iscrizione.objects.filter(user=persona).count(), 3)
+        seconda = Iscrizione.objects.get(user=persona, evento=giornate[1])
+        self.assertEqual(self.admin.delete(f'/api/iscrizioni/{seconda.id}/').status_code, 204)
+        self.assertFalse(Iscrizione.objects.filter(user=persona).exists())
+
+    def test_modifiche_comuni_e_annullamento(self):
+        from .models import Edizione, Evento
+        giornate = self._edizione()
+        r = self.admin.patch(f'/api/eventi/{giornate[0].id}/', {'host': self.altro_host.id, 'data': '2027-02-28'},
+                             format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(set(Evento.objects.values_list('host_id', flat=True)), {self.altro_host.id})
+        self.assertEqual(sorted(str(d) for d in Evento.objects.values_list('data', flat=True)),
+                         ['2027-02-28', '2027-03-02', '2027-03-05'])
+        self.assertEqual(self.admin.delete(f'/api/eventi/{giornate[2].id}/?motivazione=annullato').status_code, 204)
+        self.assertFalse(Evento.objects.exists())
+        self.assertFalse(Edizione.objects.exists())
+
+    def test_statistiche_e_parziali(self):
+        from participants.models import Iscrizione
+        from users.views import _compute_stats
+        giornate = self._edizione()
+        tutto = User.objects.create_user(email='t@x.it', password='x', cognome='T', nome='T', sesso='M')
+        parziale = User.objects.create_user(email='q@x.it', password='x', cognome='Q', nome='Q', sesso='F')
+        for g in giornate:
+            Iscrizione.objects.create(evento=g, user=tutto, stato='partecipato')
+            Iscrizione.objects.create(evento=g, user=parziale, stato='assente' if g == giornate[2] else 'partecipato')
+        _, totale = _compute_stats({})
+        self.assertEqual((totale['num_edizioni'], totale['maschi'], totale['femmine']), (1, 1, 0))
+        self.assertEqual(totale['ore_erogate'], 15.0 + 11.0)  # ore solo dei giorni frequentati
+        esiti = {i['user']: i['esito_edizione']
+                 for i in self.admin.get('/api/iscrizioni/', {'evento': giornate[0].id}).json()}
+        self.assertEqual(esiti, {tutto.id: 'partecipato', parziale.id: 'parziale'})
+
+    def test_completamento_conta_solo_chi_ha_fatto_tutte_le_giornate(self):
+        from participants.models import Iscrizione
+        from stores.models import Store
+        from users.models import Role
+        giornate = self._edizione()
+        negozio = Store.objects.create(nome='Roma', comune='Roma', provincia='RM', email_store='rm@x.it')
+        dm = Role.objects.create(nome='Department Manager')
+        completo = User.objects.create_user(email='c@x.it', password='x', cognome='C', nome='C', store=negozio, ruolo=dm)
+        parziale = User.objects.create_user(email='z@x.it', password='x', cognome='Z', nome='Z', store=negozio, ruolo=dm)
+        for g in giornate:
+            Iscrizione.objects.create(evento=g, user=completo, stato='partecipato')
+            Iscrizione.objects.create(evento=g, user=parziale, stato='partecipato' if g == giornate[0] else 'assente')
+        corsi = self.admin.get(f'/api/stores/{negozio.id}/completamento/', {'programma': 'dm-leadership'}).json()['corsi']
+        self.assertEqual([(c['nome_breve'], c['completato'], c['parziali'], c['totale']) for c in corsi],
+                         [('DM Leadership', 1, 1, 2)])
+        zoom = self.admin.get(f'/api/stores/{negozio.id}/completamento/zoom/', {'programma': 'dm-leadership'}).json()
+        self.assertEqual({u['cognome']: (u['fatti'], u['parziali']) for u in zoom['utenti']},
+                         {'C': ([self.att.id], []), 'Z': ([], [self.att.id])})
+
+
+class AccorpaAuleTest(TestCase):
+    def test_accorpa_le_aule_in_edizioni(self):
+        from datetime import date, time
+        from io import StringIO
+        from django.core.management import call_command
+        from participants.models import Iscrizione
+        from .models import Evento, Host
+        host = Host.objects.create(descrizione='T', posizione='interno')
+        aula1 = AttivitaCatalogo.objects.create(nome='DM Leadership - Aula 1/2', tipologia='ld')
+        aula2 = AttivitaCatalogo.objects.create(nome='DM Leadership - Aula 2/2', tipologia='ld')
+
+        def ev(att, giorno):
+            return Evento.objects.create(data=giorno, ora_inizio=time(9), ora_fine=time(17), attivita=att, host=host)
+
+        g1, g1b = ev(aula1, date(2024, 5, 29)), ev(aula1, date(2024, 5, 29))
+        g2, g2b = ev(aula2, date(2024, 5, 30)), ev(aula2, date(2024, 5, 30))
+        sola = ev(aula1, date(2024, 9, 1))
+        persone = [User.objects.create_user(email=f'u{i}@x.it', password='x', cognome='U', nome=str(i)) for i in range(4)]
+        # Due edizioni nello stesso giorno: l'abbinamento segue le persone in comune.
+        for p, giorno1, giorno2 in ((persone[0], g1, g2b), (persone[1], g1b, g2)):
+            Iscrizione.objects.create(evento=giorno1, user=p, stato='partecipato')
+            Iscrizione.objects.create(evento=giorno2, user=p, stato='partecipato')
+        Iscrizione.objects.create(evento=g1, user=persone[2], stato='partecipato')  # solo il primo giorno
+        Iscrizione.objects.create(evento=sola, user=persone[3], stato='partecipato')
+
+        call_command('accorpa_aule', stdout=StringIO())
+        self.assertFalse(Evento.objects.filter(edizione__isnull=False).exists())  # prova: nulla salvato
+        out = StringIO()
+        call_command('accorpa_aule', applica=True, stdout=out)
+        for e in (g1, g1b, g2, g2b, sola):
+            e.refresh_from_db()
+        nuova = AttivitaCatalogo.objects.get(nome='DM Leadership')
+        self.assertEqual((g1.edizione_id, g1.attivita_id), (g2b.edizione_id, nuova.id))
+        self.assertEqual(g1b.edizione_id, g2.edizione_id)
+        self.assertNotEqual(g1.edizione_id, g1b.edizione_id)
+        self.assertIsNone(sola.edizione_id)
+        self.assertEqual(sola.attivita_id, aula1.id)  # senza abbinamento: resta dov'era
+        aula1.refresh_from_db()
+        aula2.refresh_from_db()
+        self.assertTrue(aula1.is_active)
+        self.assertFalse(aula2.is_active)
+        self.assertIn('1 partecipazioni parziali', out.getvalue())
+        self.assertIn('SENZA ABBINAMENTO', out.getvalue())
+        out = StringIO()
+        call_command('accorpa_aule', applica=True, stdout=out)  # rilanciato: non tocca nulla
+        self.assertIn('già accorpato', out.getvalue())

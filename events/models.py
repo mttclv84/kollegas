@@ -87,7 +87,21 @@ class RichiestaDisattivazioneAttivita(models.Model):
         ]
 
 
+class Edizione(models.Model):
+    """Una formazione su più giornate: ogni giornata è un Evento, tutte con la stessa
+    attività, location, host e posti. Si conta come una sola edizione e una sola
+    partecipazione per persona (vedi events.edizioni)."""
+    created_by = models.ForeignKey('users.User', null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='edizioni_create')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Edizione su più giornate'
+        verbose_name_plural = 'Edizioni su più giornate'
+
+
 class Evento(models.Model):
+    edizione = models.ForeignKey(Edizione, null=True, blank=True, on_delete=models.SET_NULL, related_name='giornate')
     data = models.DateField()
     ora_inizio = models.TimeField()
     ora_fine = models.TimeField()

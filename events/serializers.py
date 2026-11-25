@@ -2,6 +2,17 @@ from rest_framework import serializers
 from .models import Host, AttivitaCatalogo, Evento, RichiestaDisattivazioneAttivita
 
 
+def giornate_edizione(serializer, evento):
+    """Id delle giornate dell'edizione in ordine di data (una query per edizione, poi in cache)."""
+    if not evento.edizione_id:
+        return None
+    cache = serializer.context.setdefault('_giornate_edizione', {}) if hasattr(serializer, 'context') else {}
+    if evento.edizione_id not in cache:
+        cache[evento.edizione_id] = list(Evento.objects.filter(edizione_id=evento.edizione_id)
+                                         .order_by('data', 'ora_inizio', 'id').values_list('id', flat=True))
+    return cache[evento.edizione_id]
+
+
 class HostSerializer(serializers.ModelSerializer):
     class Meta:
         model = Host
@@ -49,6 +60,8 @@ class EventoListSerializer(serializers.ModelSerializer):
     presenze_complete = serializers.SerializerMethodField()
     ehs_corso_nome = serializers.SerializerMethodField()
     ehs_negozio_codice = serializers.SerializerMethodField()
+    giornata = serializers.SerializerMethodField()
+    giornate_totali = serializers.SerializerMethodField()
 
     class Meta:
         model = Evento
@@ -60,10 +73,19 @@ class EventoListSerializer(serializers.ModelSerializer):
             'max_partecipanti', 'modalita_partecipazione',
             'iscritti_count', 'posti_disponibili', 'presenze_complete',
             'is_ehs', 'ehs_corso_nome', 'ehs_negozio_codice',
+            'edizione', 'giornata', 'giornate_totali',
         ]
 
     def get_iscritti_count(self, obj):
         return obj.iscrizioni.count()
+
+    def get_giornata(self, obj):
+        ids = giornate_edizione(self, obj)
+        return ids.index(obj.id) + 1 if ids else None
+
+    def get_giornate_totali(self, obj):
+        ids = giornate_edizione(self, obj)
+        return len(ids) if ids else None
 
     def get_presenze_complete(self, obj):
         """True quando ogni iscritto è segnato presente o assente: sul calendario il
@@ -94,6 +116,7 @@ class EventoDetailSerializer(serializers.ModelSerializer):
     created_by_nome = serializers.CharField(source='created_by.nome_completo', read_only=True)
     ehs_corso_id = serializers.SerializerMethodField()
     ehs_partecipanti_min = serializers.SerializerMethodField()
+    giornate = serializers.SerializerMethodField()
 
     class Meta:
         model = Evento
@@ -106,8 +129,15 @@ class EventoDetailSerializer(serializers.ModelSerializer):
             'iscritti_count', 'posti_disponibili',
             'created_by', 'created_by_nome', 'created_at', 'updated_at',
             'is_ehs', 'ehs_corso_id', 'ehs_partecipanti_min',
+            'edizione', 'giornate',
         ]
-        read_only_fields = ['ore_totali', 'created_by', 'created_at', 'updated_at']
+        read_only_fields = ['ore_totali', 'created_by', 'created_at', 'updated_at', 'edizione']
+
+    def get_giornate(self, obj):
+        if not obj.edizione_id:
+            return []
+        return [{'id': g.id, 'data': g.data, 'ora_inizio': g.ora_inizio, 'ora_fine': g.ora_fine}
+                for g in Evento.objects.filter(edizione_id=obj.edizione_id).order_by('data', 'ora_inizio', 'id')]
 
     def get_ehs_partecipanti_min(self, obj):
         # Minimo effettivo dell'aula EHS (0 = online, nessun minimo).

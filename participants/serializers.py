@@ -15,6 +15,7 @@ class IscrizioneSerializer(serializers.ModelSerializer):
     location_display = serializers.CharField(source='evento.location_display', read_only=True)
     attivita_tipologia = serializers.CharField(source='evento.attivita.tipologia', read_only=True)
     richiesta_pendente_id = serializers.SerializerMethodField()
+    esito_edizione = serializers.SerializerMethodField()
 
     class Meta:
         model = Iscrizione
@@ -24,10 +25,26 @@ class IscrizioneSerializer(serializers.ModelSerializer):
             'store_id', 'store_nome',
             'stato',
             'attivita_nome', 'evento_data', 'evento_ore', 'location_display', 'attivita_tipologia',
-            'richiesta_pendente_id',
+            'richiesta_pendente_id', 'esito_edizione',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
+
+    def get_esito_edizione(self, obj):
+        """Per le formazioni su più giornate: partecipato / parziale / iscritto / assente
+        sull'intera edizione (None per gli eventi di una sola giornata)."""
+        edizione_id = obj.evento.edizione_id
+        if not edizione_id:
+            return None
+        cache = self.context.setdefault('_esiti_edizione', {})
+        if edizione_id not in cache:
+            from events.edizioni import esito, giornate_per_edizione
+            stati = {}
+            for user_id, stato in Iscrizione.objects.filter(evento__edizione_id=edizione_id).values_list('user_id', 'stato'):
+                stati.setdefault(user_id, []).append(stato)
+            n = giornate_per_edizione([edizione_id]).get(edizione_id, 1)
+            cache[edizione_id] = {u: esito(s, n) for u, s in stati.items()}
+        return cache[edizione_id].get(obj.user_id)
 
     def get_richiesta_pendente_id(self, obj):
         pending = getattr(obj, 'pending_richieste', None)

@@ -98,7 +98,27 @@ class IscrizioneListCreateView(generics.ListCreateAPIView):
                 verifica_iscrizione(evento, target_user, operatore=user)
             except TransizioneNonValida as e:
                 raise ValidationError({'detail': str(e)})
-        serializer.save()
+        iscrizione = serializer.save()
+        # Edizione su più giornate: l'iscrizione vale per tutte le giornate.
+        if evento.edizione_id:
+            from events.models import Evento
+            for giornata in Evento.objects.filter(edizione_id=evento.edizione_id).exclude(pk=evento.pk):
+                Iscrizione.objects.get_or_create(evento=giornata, user=iscrizione.user, defaults={'stato': 'iscritto'})
+
+
+def giornate_sorelle(iscrizione):
+    """Le iscrizioni della stessa persona alle altre giornate della stessa edizione."""
+    if not iscrizione.evento.edizione_id:
+        return Iscrizione.objects.none()
+    return Iscrizione.objects.filter(user_id=iscrizione.user_id,
+                                     evento__edizione_id=iscrizione.evento.edizione_id).exclude(pk=iscrizione.pk)
+
+
+def prima_data(evento):
+    if not evento.edizione_id:
+        return evento.data
+    from events.models import Evento
+    return Evento.objects.filter(edizione_id=evento.edizione_id).order_by('data').values_list('data', flat=True).first()
 
 
 class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -139,13 +159,15 @@ class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
             if sessione is not None:
                 rimuovi_partecipante_completata(sessione, iscrizione.user)
         if user.livello_accesso == 'store':
-            delta = (iscrizione.evento.data - date.today()).days
+            # Edizione su più giornate: conta la prima giornata.
+            delta = (prima_data(iscrizione.evento) - date.today()).days
             soglia = giorni_blocco(iscrizione.evento)
             if delta < soglia:
                 return Response(
                     {'detail': f'Eliminazione bloccata: mancano meno di {soglia} giorni all\'evento. Invia una richiesta di cancellazione.'},
                     status=status.HTTP_403_FORBIDDEN
                 )
+        giornate_sorelle(iscrizione).delete()
         return super().destroy(request, *args, **kwargs)
 
 
@@ -322,7 +344,7 @@ class RichiestaCancellazioneListCreateView(APIView):
         if user.livello_accesso == 'store' and iscrizione.user.store_id != user.store_id:
             return Response({'detail': 'Iscrizione non di questo store.'}, status=403)
 
-        delta = (iscrizione.evento.data - date.today()).days
+        delta = (prima_data(iscrizione.evento) - date.today()).days
         soglia = giorni_blocco(iscrizione.evento)
         if delta >= soglia:
             return Response({'detail': f'Puoi eliminare direttamente (più di {soglia} giorni all\'evento).'}, status=400)
@@ -365,6 +387,7 @@ class RichiestaCancellazioneDetailView(APIView):
             return Response({'detail': 'Richiesta già processata.'}, status=400)
 
         if nuovo_stato == 'approvata' and richiesta.iscrizione:
+            giornate_sorelle(richiesta.iscrizione).delete()
             richiesta.iscrizione.delete()
             richiesta.iscrizione = None  # allinea oggetto in-memory al SET_NULL del DB
 
