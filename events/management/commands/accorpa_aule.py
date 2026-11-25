@@ -20,7 +20,7 @@ from participants.models import Iscrizione
 
 ACCORPAMENTI = [
     ('DM Leadership', [['DM Leadership - Aula 1/2'], ['DM Leadership - Aula 2/2']]),
-    ('GWU TM-DM - Leadership', [['GWU TM-DM - Leadership - Aula 1/2'], ['GWU TM-DM - Leadership - Aula 2/2']]),
+    ('GWU TM-DM Leadership Program', [['GWU TM-DM - Leadership - Aula 1/2'], ['GWU TM-DM - Leadership - Aula 2/2']]),
     ('LOAS Modulo 1', [['LOAS Modulo1 - Aula 1/2', 'LOAS mod.1 - 1/2'], ['LOAS Modulo1 - aula 2/2']]),
     ('LOAS Modulo 2', [['LOAS Modulo 2 - aula 1/2'], ['LOAS Modulo 2 - aula 2/2']]),
     ('LOAS Modulo 3', [['LOAS Modulo 3 - aula 1/2'], ['LOAS Modulo 3 - aula 2/2']]),

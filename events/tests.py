@@ -277,3 +277,40 @@ class AccorpaAuleTest(TestCase):
         out = StringIO()
         call_command('accorpa_aule', applica=True, stdout=out)  # rilanciato: non tocca nulla
         self.assertIn('già accorpato', out.getvalue())
+
+
+class UnisciGiornateTest(TestCase):
+    def test_unisce_giornate_separate_e_rinomina(self):
+        from datetime import date, time
+        from io import StringIO
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        from participants.models import Iscrizione
+        from .models import Evento, Host
+        host = Host.objects.create(descrizione='T', posizione='interno')
+        refuso = AttivitaCatalogo.objects.create(nome='GWU TM-DM Leadership Proram', tipologia='ld', is_active=False)
+        corso = AttivitaCatalogo.objects.create(nome='GWU TM-DM - Leadership', tipologia='ld')
+        giorni = [Evento.objects.create(data=date(2025, 3, d), ora_inizio=time(9), ora_fine=time(17),
+                                        attivita=refuso, host=host) for d in (11, 12)]
+        persona = User.objects.create_user(email='p@x.it', password='x', cognome='P', nome='P')
+        for g in giorni:
+            Iscrizione.objects.create(evento=g, user=persona, stato='partecipato')
+        argomenti = dict(origine='GWU TM-DM Leadership Proram', date=['2025-03-11', '2025-03-12'],
+                         destinazione='GWU TM-DM - Leadership', rinomina='GWU TM-DM Leadership Program')
+
+        call_command('unisci_giornate', stdout=StringIO(), **argomenti)
+        corso.refresh_from_db()
+        self.assertEqual(corso.nome, 'GWU TM-DM - Leadership')  # prova: nulla salvato
+        out = StringIO()
+        call_command('unisci_giornate', applica=True, stdout=out, **argomenti)
+        corso.refresh_from_db()
+        for g in giorni:
+            g.refresh_from_db()
+        self.assertEqual(corso.nome, 'GWU TM-DM Leadership Program')
+        self.assertEqual({g.attivita_id for g in giorni}, {corso.id})
+        self.assertEqual(len({g.edizione_id for g in giorni}), 1)
+        self.assertIn('1 persone, 0 parziali', out.getvalue())
+        with self.assertRaises(CommandError):  # già unite: non si rifà
+            call_command('unisci_giornate', stdout=StringIO(), **{**argomenti, 'origine': 'GWU TM-DM Leadership Program',
+                                                                   'destinazione': 'GWU TM-DM Leadership Program',
+                                                                   'rinomina': None})

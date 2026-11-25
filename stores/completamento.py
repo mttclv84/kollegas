@@ -34,7 +34,8 @@ PROGRAMMI = {
     'gwu-tm-dm': {
         'titolo': 'GWU TM-DM Leadership',
         'ruoli': ['Department Manager'],
-        'corsi': ['GWU TM-DM - Leadership'],
+        # Il nome corretto è "Leadership Program"; il secondo vale finché non è rinominata.
+        'corsi': ['GWU TM-DM Leadership Program', 'GWU TM-DM - Leadership'],
         'corsi_precedenti': ['GWU TM-DM - Leadership - Aula 1/2', 'GWU TM-DM - Leadership - Aula 2/2'],
         'percorso': False,
     },
