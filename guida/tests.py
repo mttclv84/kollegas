@@ -30,6 +30,12 @@ class GuidaTest(TestCase):
         ho = self._client('ho').get('/api/guida/').json()
         self.assertEqual((len(ho), ho[2]['titolo']), (10, 'Creare una formazione'))
         self.assertTrue(all(x['immagine_percorso'] for x in ho[:9]))  # l'ultimo argomento è senza screenshot
+        testi = {x['titolo']: x['contenuto'] for x in ho}
+        self.assertIn('solo le formazioni create da te', testi['Creare una formazione'])
+        self.assertIn('profilo **Base**', testi['Gestione Account'])
+        self.assertIn('**creata da te**', testi['Richieste di Modifica'])
+        self.assertIn("solo l'Admin può eliminarli", testi['Report: Completamento, Dettaglio e Mapping'])
+        self.assertIn('Non vedo il pulsante Elimina', testi['Eccezioni Calendario e domande frequenti'])
 
     def test_solo_admin_modifica_e_gli_altri_vedono_gli_attivi(self):
         admin, area = self._client('admin'), self._client('area')

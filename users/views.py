@@ -53,7 +53,8 @@ def log_audit(actor, azione, target_tipo, target_obj, dettaglio=''):
 User = get_user_model()
 
 # Profili che un HO non può modificare né disattivare (es. declassare l'Admin a Base).
-PROFILI_PROTETTI_DA_HO = ('admin', 'admin_ehs')
+# HO crea, modifica e disattiva solo i profili Base; tutti gli altri solo l'Admin.
+LIVELLI_GESTITI_DA_HO = ('base',)
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -202,8 +203,8 @@ class UserListCreateView(generics.ListCreateAPIView):
         if livello_chi_crea not in ('admin', 'ho'):
             raise PermissionDenied('Solo Admin e HO possono creare utenti.')
         livello_nuovo = serializer.validated_data.get('livello_accesso', 'base')
-        if livello_chi_crea == 'ho' and livello_nuovo not in ('area', 'base'):
-            raise ValidationError({'livello_accesso': 'HO può creare solo profili Area Manager o Base.'})
+        if livello_chi_crea == 'ho' and livello_nuovo != 'base':
+            raise ValidationError({'livello_accesso': "HO può creare solo profili Base: gli altri li crea l'Admin."})
         if not serializer.validated_data.get('store'):
             raise ValidationError({'store': 'Il workplace è obbligatorio.'})
         instance = serializer.save()
@@ -225,16 +226,16 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def _verifica_profilo_protetto(self, target):
         from rest_framework.exceptions import PermissionDenied
-        if self.request.user.livello_accesso == 'ho' and target.livello_accesso in PROFILI_PROTETTI_DA_HO:
-            raise PermissionDenied('HO non può modificare o disattivare un profilo Admin o Admin EHS.')
+        if self.request.user.livello_accesso == 'ho' and target.livello_accesso not in LIVELLI_GESTITI_DA_HO:
+            raise PermissionDenied("HO può modificare o disattivare solo i profili Base: gli altri li gestisce l'Admin.")
 
     def perform_update(self, serializer):
         from rest_framework.exceptions import ValidationError
         self._verifica_profilo_protetto(serializer.instance)
         livello_chi_modifica = self.request.user.livello_accesso
         nuovo_livello = serializer.validated_data.get('livello_accesso')
-        if nuovo_livello and livello_chi_modifica == 'ho' and nuovo_livello not in ('area', 'base'):
-            raise ValidationError({'livello_accesso': 'HO può assegnare solo livelli Area Manager o Base.'})
+        if nuovo_livello and livello_chi_modifica == 'ho' and nuovo_livello not in LIVELLI_GESTITI_DA_HO:
+            raise ValidationError({'livello_accesso': 'HO può assegnare solo il livello Base.'})
         if nuovo_livello and livello_chi_modifica == 'store' and nuovo_livello != serializer.instance.livello_accesso:
             raise ValidationError({'livello_accesso': 'Lo Store non può cambiare il livello di accesso.'})
         if 'store' in serializer.validated_data and not serializer.validated_data.get('store'):
@@ -376,7 +377,7 @@ class PercorsoCrescitaListCreateView(generics.ListCreateAPIView):
 
 
 class PercorsoCrescitaDeleteView(APIView):
-    permission_classes = [IsAdminOrHOOrAreaEHS]
+    permission_classes = [IsAdmin]  # solo l'Admin elimina un percorso di crescita
 
     def delete(self, request, pk):
         from datetime import timedelta
@@ -795,9 +796,11 @@ class RichiestaCreazionoProfiloDetailView(APIView):
                 return Response({'detail': 'Non autorizzato.'}, status=403)
             return Response({'ok': True})
 
-        # Azione approvazione/rifiuto: solo admin/HO
+        # Azione approvazione/rifiuto: solo admin/HO (HO solo per i profili Base)
         if livello not in ('admin', 'ho'):
             return Response({'detail': 'Non autorizzato.'}, status=403)
+        if livello == 'ho' and richiesta.livello_accesso not in LIVELLI_GESTITI_DA_HO:
+            return Response({'detail': "HO gestisce solo le richieste di profili Base: questa la gestisce l'Admin."}, status=403)
 
         if richiesta.stato != 'pending':
             return Response({'detail': 'Richiesta già processata.'}, status=400)
@@ -888,6 +891,8 @@ class RichiestaEliminazioneProfiloDetailView(APIView):
 
         if livello not in ('admin', 'ho'):
             return Response({'detail': 'Non autorizzato.'}, status=403)
+        if livello == 'ho' and richiesta.target_user.livello_accesso not in LIVELLI_GESTITI_DA_HO:
+            return Response({'detail': "HO gestisce solo le richieste su profili Base: questa la gestisce l'Admin."}, status=403)
         if richiesta.stato != 'pending':
             return Response({'detail': 'Richiesta già processata.'}, status=400)
 
@@ -917,10 +922,12 @@ class AccountBadgeView(APIView):
         livello = request.user.livello_accesso
         if livello not in ('admin', 'ho'):
             return Response({'count': 0})
-        count = (
-            RichiestaCreazioneProfilo.objects.filter(stato='pending').count() +
-            RichiestaEliminazioneProfilo.objects.filter(stato='pending').count()
-        )
+        creazioni = RichiestaCreazioneProfilo.objects.filter(stato='pending')
+        eliminazioni = RichiestaEliminazioneProfilo.objects.filter(stato='pending')
+        if livello == 'ho':  # l'HO decide solo sui profili Base
+            creazioni = creazioni.filter(livello_accesso__in=LIVELLI_GESTITI_DA_HO)
+            eliminazioni = eliminazioni.filter(target_user__livello_accesso__in=LIVELLI_GESTITI_DA_HO)
+        count = creazioni.count() + eliminazioni.count()
         return Response({'count': count})
 
 

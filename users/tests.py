@@ -126,7 +126,7 @@ class HOSolaVisioneEHSTest(TestCase):
         ehs = RichiestaCancellazione.objects.create(richiedente=self.persona, motivazione='x', snap_tipologia='ehs')
         altra = RichiestaCancellazione.objects.create(richiedente=self.persona, motivazione='x', snap_tipologia='ld')
         self.assertEqual({r['id'] for r in self.c.get('/api/richieste-cancellazione/', {'ambito': 'ehs'}).json()}, set())
-        self.assertEqual({r['id'] for r in self.c.get('/api/richieste-cancellazione/').json()}, {altra.id})
+        self.assertEqual({r['id'] for r in self.c.get('/api/richieste-cancellazione/').json()}, set())  # solo formazioni proprie
         self.assertNotEqual(ehs.id, altra.id)
         admin_ehs = User.objects.create_user(email='ae@x.it', password='x', cognome='A', nome='E', livello_accesso='admin_ehs')
         admin = User.objects.create_user(email='ad@x.it', password='x', cognome='A', nome='D', livello_accesso='admin')
@@ -270,7 +270,10 @@ class PasswordTemporaneaTest(TestCase):
             target.refresh_from_db()
             self.assertTrue(target.is_active)
         self.assertEqual((self.admin.livello_accesso, self.admin.email), ('admin', 'admin@x.it'))
-        self.assertEqual(c_ho.patch(f'/api/users/{self.utente.id}/', {'nome': 'Anna Maria'}, format='json').status_code, 200)
+        # L'HO modifica solo i profili Base: l'Area Manager no.
+        self.assertEqual(c_ho.patch(f'/api/users/{self.utente.id}/', {'nome': 'Anna Maria'}, format='json').status_code, 403)
+        base = User.objects.create_user(email='base@x.it', password='x', cognome='B', nome='B', livello_accesso='base', store=self.negozio)
+        self.assertEqual(c_ho.patch(f'/api/users/{base.id}/', {'nome': 'Bea'}, format='json').status_code, 200)
 
     def test_refresh_restituisce_un_nuovo_token_e_invalida_il_vecchio(self):
         from rest_framework_simplejwt.tokens import RefreshToken
@@ -407,3 +410,67 @@ class SolaLetturaTest(TestCase):
         self.assertEqual((u['cognome'], u['nome'], u['email'], u['codice_matricola']), ('Rossi', 'Mario', '', ''))
         s = self.c.get(f'/api/stores/{negozio.id}/').json()
         self.assertEqual((s['nome'], s['email_store'], s['portale_password']), ('Torino', '', ''))
+
+
+class LimitiHOTest(TestCase):
+    """HO: crea e modifica solo profili Base, non elimina percorsi Development,
+    decide solo le richieste di modifica delle formazioni create da sé."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.negozio = Store.objects.create(nome='Roma', comune='Roma', provincia='RM', email_store='rm@x.it')
+        self.ho = User.objects.create_user(email='ho@x.it', password='x', cognome='H', nome='O', livello_accesso='ho')
+        self.ho2 = User.objects.create_user(email='ho2@x.it', password='x', cognome='H2', nome='O', livello_accesso='ho')
+        self.store = User.objects.create_user(email='st@x.it', password='x', cognome='S', nome='T', livello_accesso='store',
+                                              store=self.negozio)
+        self.c = APIClient()
+        self.c.force_authenticate(self.ho)
+
+    def test_crea_solo_profili_base(self):
+        dati = {'cognome': 'Nuovo', 'nome': 'N', 'store': self.negozio.id}
+        self.assertEqual(self.c.post('/api/users/', {**dati, 'email': 'a@x.it', 'livello_accesso': 'area'}, format='json').status_code, 400)
+        self.assertEqual(self.c.post('/api/users/', {**dati, 'email': 'b@x.it', 'livello_accesso': 'base'}, format='json').status_code, 201)
+        self.assertEqual(self.c.patch(f'/api/users/{self.store.id}/', {'nome': 'X'}, format='json').status_code, 403)
+        self.assertEqual(self.c.delete(f'/api/users/{self.store.id}/').status_code, 403)
+
+    def test_richieste_profilo_solo_base(self):
+        from .models import RichiestaCreazioneProfilo, RichiestaEliminazioneProfilo
+        area = RichiestaCreazioneProfilo.objects.create(richiedente=self.store, cognome='A', nome='A', email='na@x.it',
+                                                        livello_accesso='area', store=self.negozio)
+        base = RichiestaCreazioneProfilo.objects.create(richiedente=self.store, cognome='B', nome='B', email='nb@x.it',
+                                                        livello_accesso='base', store=self.negozio)
+        self.assertEqual(self.c.get('/api/account-badge/').json()['count'], 1)
+        self.assertEqual(self.c.patch(f'/api/richieste-creazione/{area.id}/', {'stato': 'rifiutata'}, format='json').status_code, 403)
+        self.assertEqual(self.c.patch(f'/api/richieste-creazione/{base.id}/', {'stato': 'rifiutata'}, format='json').status_code, 200)
+        elim = RichiestaEliminazioneProfilo.objects.create(richiedente=self.store, target_user=self.ho2, snap_nome='H2 O')
+        self.assertEqual(self.c.patch(f'/api/richieste-eliminazione/{elim.id}/', {'stato': 'approvata'}, format='json').status_code, 403)
+        self.ho2.refresh_from_db()
+        self.assertTrue(self.ho2.is_active)
+
+    def test_percorso_development_solo_admin(self):
+        from .models import PercorsoCrescita
+        from datetime import date
+        p = PercorsoCrescita.objects.create(user=self.store, data=date.today(), tipo_evento='nota')
+        self.assertEqual(self.c.delete(f'/api/percorso/{p.id}/').status_code, 403)
+        self.assertTrue(PercorsoCrescita.objects.filter(pk=p.pk).exists())
+
+    def test_richieste_di_modifica_solo_formazioni_proprie(self):
+        from datetime import date, time
+        from events.models import AttivitaCatalogo, Evento, Host
+        from participants.models import Iscrizione, RichiestaCancellazione
+        att = AttivitaCatalogo.objects.create(nome='CS', tipologia='ld')
+        host = Host.objects.create(descrizione='T', posizione='interno')
+        persona = User.objects.create_user(email='p@x.it', password='x', cognome='P', nome='P', livello_accesso='base',
+                                           store=self.negozio)
+
+        def richiesta(autore):
+            ev = Evento.objects.create(data=date(2027, 3, 1), ora_inizio=time(9), ora_fine=time(13), attivita=att,
+                                       host=host, created_by=autore)
+            isc = Iscrizione.objects.create(evento=ev, user=persona, stato='iscritto')
+            return RichiestaCancellazione.objects.create(iscrizione=isc, richiedente=self.store, motivazione='x',
+                                                         snap_tipologia='ld')
+        mia, altrui = richiesta(self.ho), richiesta(self.ho2)
+        self.assertEqual({r['id'] for r in self.c.get('/api/richieste-cancellazione/').json()}, {mia.id})
+        url = '/api/richieste-cancellazione/{}/'
+        self.assertEqual(self.c.patch(url.format(altrui.id), {'stato': 'rifiutata'}, format='json').status_code, 403)
+        self.assertEqual(self.c.patch(url.format(mia.id), {'stato': 'rifiutata'}, format='json').status_code, 200)

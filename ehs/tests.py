@@ -841,7 +841,8 @@ class EHSRegoleAuleTest(TestCase):
             return self._client(u).patch(f'/api/richieste-cancellazione/{r.id}/', {'stato': 'rifiutata'}).status_code
 
         self.assertEqual(visibili(self.admin_ehs), {ehs.id})
-        self.assertEqual(visibili(ho), {altra.id})
+        self.assertEqual(visibili(ho), set())  # l'HO vede solo le richieste sulle formazioni create da sé
+        self.assertNotEqual(altra.id, ehs.id)
         self.assertEqual(decidi(ho, ehs), 403)
         self.assertEqual(decidi(self.admin_ehs, altra), 403)
         self.assertEqual(decidi(self.admin_ehs, ehs), 200)

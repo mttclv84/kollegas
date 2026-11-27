@@ -338,13 +338,9 @@ class RichiestaCancellazioneListCreateView(APIView):
         elif user.livello_accesso == 'admin_ehs':
             qs = qs.filter(snap_tipologia=TIPOLOGIA_EHS)
         elif user.livello_accesso == 'ho':
-            qs = qs.exclude(snap_tipologia=TIPOLOGIA_EHS)
-            ruolo_nome = user.ruolo.nome if user.ruolo else ''
-            if ruolo_nome == 'L&D':
-                qs = qs.filter(snap_tipologia='ld')
-            elif ruolo_nome == 'Recruiting':
-                qs = qs.filter(snap_tipologia='recruiting')
-            # HO senza ruolo specifico vede tutto
+            # L'HO gestisce solo le richieste sulle formazioni create da sé (e rivede quelle che ha già deciso).
+            qs = qs.exclude(snap_tipologia=TIPOLOGIA_EHS).filter(
+                Q(iscrizione__evento__created_by=user) | Q(processed_by=user))
         else:
             return Response([], status=200)
         stato = request.query_params.get('stato')
@@ -408,6 +404,10 @@ class RichiestaCancellazioneDetailView(APIView):
         livello = request.user.livello_accesso
         if (ehs and livello == 'ho') or (not ehs and livello == 'admin_ehs'):
             return Response({'detail': 'Le richieste EHS le valida l\'EHS Admin, le altre Admin/HO.'}, status=403)
+        # L'HO decide solo sulle richieste delle formazioni create da sé.
+        if livello == 'ho' and not (richiesta.iscrizione and richiesta.iscrizione.evento.created_by_id == request.user.id):
+            return Response({'detail': "Puoi gestire solo le richieste sulle formazioni create da te: questa la gestisce "
+                                       "chi ha creato la formazione o l'Admin."}, status=403)
 
         nuovo_stato = request.data.get('stato')
         if nuovo_stato not in ('approvata', 'rifiutata'):

@@ -174,11 +174,12 @@ class RichiestaCreazionoProfiloSerializer(serializers.ModelSerializer):
 class RichiestaEliminazioneProfiloSerializer(serializers.ModelSerializer):
     richiedente_nome = serializers.CharField(source='richiedente.nome_completo', read_only=True)
     richiedente_store = serializers.CharField(source='richiedente.store.nome', read_only=True)
+    target_livello = serializers.CharField(source='target_user.livello_accesso', read_only=True, default='')
 
     class Meta:
         model = RichiestaEliminazioneProfilo
         fields = [
-            'id', 'target_user', 'richiedente', 'richiedente_nome', 'richiedente_store',
+            'id', 'target_user', 'target_livello', 'richiedente', 'richiedente_nome', 'richiedente_store',
             'snap_nome', 'stato', 'visto_ho', 'visto_store',
             'processed_by', 'processed_at', 'created_at',
         ]
