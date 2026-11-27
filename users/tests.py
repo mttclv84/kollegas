@@ -138,6 +138,7 @@ class HOSolaVisioneEHSTest(TestCase):
     def test_fuori_da_ehs_resta_operativo(self):
         dati = {'evento': self.normale.id, 'user': self.altra.id, 'stato': 'iscritto'}
         self.assertEqual(self.c.post('/api/iscrizioni/', dati, format='json').status_code, 201)
+        Evento.objects.filter(pk=self.normale.pk).update(created_by=self.ho)  # gli HO modificano solo le proprie
         self.assertEqual(self.c.patch(f'/api/eventi/{self.normale.id}/', {'nota': 'x'}, format='json').status_code, 200)
 
 

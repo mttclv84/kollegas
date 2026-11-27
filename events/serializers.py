@@ -62,11 +62,13 @@ class EventoListSerializer(serializers.ModelSerializer):
     ehs_negozio_codice = serializers.SerializerMethodField()
     giornata = serializers.SerializerMethodField()
     giornate_totali = serializers.SerializerMethodField()
+    puo_modificare = serializers.SerializerMethodField()
+    created_by_nome = serializers.SerializerMethodField()
 
     class Meta:
         model = Evento
         fields = [
-            'id', 'data', 'ora_inizio', 'ora_fine', 'ore_totali',
+            'id', 'data', 'ora_inizio', 'ora_fine', 'ore_totali', 'puo_modificare', 'created_by_nome',
             'attivita', 'attivita_nome', 'attivita_tipologia',
             'host', 'host_nome', 'host_tipo',
             'location_store', 'location_esterna', 'location_display',
@@ -78,6 +80,14 @@ class EventoListSerializer(serializers.ModelSerializer):
 
     def get_iscritti_count(self, obj):
         return obj.iscrizioni.count()
+
+    def get_puo_modificare(self, obj):
+        from .permessi import puo_gestire_evento
+        request = self.context.get('request')
+        return bool(request) and puo_gestire_evento(request.user, obj)
+
+    def get_created_by_nome(self, obj):
+        return obj.created_by.nome_completo if obj.created_by_id else ''
 
     def get_giornata(self, obj):
         ids = giornate_edizione(self, obj)

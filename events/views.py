@@ -13,6 +13,7 @@ from .serializers import (
     RichiestaDisattivazioneAttivitaSerializer,
 )
 from users.accesso import MESSAGGIO_SOLA_VISIONE_EHS, sola_visione_ehs
+from .permessi import MESSAGGIO_NON_TUA, puo_gestire_evento
 from users.permissions import IsAdmin, IsAdminOrHO,IsAdminOrHOEHS, IsAdminOrHOOrArea, IsAdminOrHOOrAreaEHS
 
 
@@ -141,7 +142,7 @@ class EventoListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         qs = Evento.objects.select_related(
-            'attivita', 'host', 'location_store', 'ehs_sessione__corso', 'ehs_sessione__negozio',
+            'attivita', 'host', 'location_store', 'created_by', 'ehs_sessione__corso', 'ehs_sessione__negozio',
         ).prefetch_related('iscrizioni')
         params = self.request.query_params
         if params.get('anno') and params.get('mese'):
@@ -262,6 +263,8 @@ class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
         if sola_visione_ehs(self.request.user) and (
                 serializer.instance.is_ehs or dati.get('is_ehs') or attivita.tipologia == 'ehs'):
             self.permission_denied(self.request, message=MESSAGGIO_SOLA_VISIONE_EHS)
+        if not puo_gestire_evento(self.request.user, serializer.instance):
+            self.permission_denied(self.request, message=MESSAGGIO_NON_TUA)
         evento = serializer.save()
         if evento.edizione_id:
             # Le giornate di un'edizione sono sempre uguali: cambiano solo data e orari.
@@ -276,6 +279,8 @@ class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance = self.get_object()
         if instance.is_ehs and sola_visione_ehs(request.user):
             self.permission_denied(request, message=MESSAGGIO_SOLA_VISIONE_EHS)
+        if not puo_gestire_evento(request.user, instance):
+            self.permission_denied(request, message=MESSAGGIO_NON_TUA)
         motivazione = (request.data.get('motivazione') or request.query_params.get('motivazione') or '').strip()
         if not motivazione:
             return Response({'detail': 'La motivazione è obbligatoria per annullare un evento.'}, status=400)

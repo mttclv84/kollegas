@@ -479,3 +479,43 @@ class CompletaParzialiOpzioniTest(TestCase):
         call_command('completa_parziali', applica=True, anche_disattivati=True, escludi=[escluso.id], stdout=StringIO())
         self.assertTrue(Iscrizione.objects.filter(evento=g2, user=spento, stato='partecipato').exists())
         self.assertFalse(Iscrizione.objects.filter(evento=g2, user=escluso).exists())
+
+
+class FormazioniDiAltriHOTest(TestCase):
+    """Un HO modifica e annulla solo le formazioni create da sé; l'Admin tutte."""
+
+    def setUp(self):
+        from .models import Host
+        self.att = AttivitaCatalogo.objects.create(nome='Customer Service', tipologia='ld')
+        self.host = Host.objects.create(descrizione='Trainer', posizione='interno')
+        self.clienti = {}
+        for chi, livello in (('ho1', 'ho'), ('ho2', 'ho'), ('admin', 'admin')):
+            c = APIClient()
+            c.force_authenticate(User.objects.create_user(email=f'{chi}@x.it', password='x', cognome=chi.upper(),
+                                                          nome='N', livello_accesso=livello))
+            self.clienti[chi] = c
+
+    def _crea(self, chi):
+        r = self.clienti[chi].post('/api/eventi/', {
+            'data': '2027-03-01', 'ora_inizio': '09:00', 'ora_fine': '13:00', 'attivita': self.att.id,
+            'host': self.host.id, 'location_esterna': 'Milano'}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.data['id']
+
+    def _puo(self, chi, pk):
+        elenco = self.clienti[chi].get('/api/eventi/', {'data_da': '2027-03-01', 'data_a': '2027-03-01'}).json()
+        righe = elenco['results'] if isinstance(elenco, dict) else elenco
+        return next(e for e in righe if e['id'] == pk)['puo_modificare']
+
+    def test_solo_chi_ha_creato_o_admin(self):
+        from .models import Evento
+        pk = self._crea('ho1')
+        self.assertEqual((self._puo('ho1', pk), self._puo('ho2', pk), self._puo('admin', pk)), (True, False, True))
+        url = f'/api/eventi/{pk}/'
+        self.assertEqual(self.clienti['ho2'].patch(url, {'nota': 'x'}, format='json').status_code, 403)
+        self.assertEqual(self.clienti['ho2'].delete(url, {'motivazione': 'no'}, format='json').status_code, 403)
+        self.assertEqual(self.clienti['ho1'].patch(url, {'nota': 'ok'}, format='json').status_code, 200)
+        # Formazione senza autore (es. importata): solo l'Admin.
+        Evento.objects.filter(pk=pk).update(created_by=None)
+        self.assertEqual(self.clienti['ho1'].delete(url, {'motivazione': 'no'}, format='json').status_code, 403)
+        self.assertEqual(self.clienti['admin'].delete(url, {'motivazione': 'annullata'}, format='json').status_code, 204)
