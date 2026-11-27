@@ -14,7 +14,7 @@ MESSAGGIO_CAMBIO_PASSWORD = 'Devi scegliere una nuova password per continuare.'
 CODICE_CAMBIO_PASSWORD = 'cambio_password_richiesto'
 
 # Nella sezione EHS questi livelli vedono tutto ma non modificano nulla.
-LIVELLI_SOLA_VISIONE_EHS = {'ho'}
+LIVELLI_SOLA_VISIONE_EHS = {'ho', 'area'}
 MESSAGGIO_SOLA_VISIONE_EHS = 'Il tuo profilo può solo visualizzare la sezione EHS.'
 
 

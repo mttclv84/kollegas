@@ -57,7 +57,8 @@ User = get_user_model()
 # Livelli con accesso alla sezione EHS (§4: la matrice permessi copre esplicitamente
 # solo STORE/FORNITORE/ADMIN; HO è incluso per coerenza con il resto di Kollegas,
 # dove è trattato quasi ovunque come equivalente ad ADMIN — vedi step 3).
-RUOLI_EHS = ('store', 'fornitore', 'admin', 'admin_ehs', 'ho')
+# 'area' entra solo in lettura: le scritture le blocca SolaVisioneEHSMiddleware.
+RUOLI_EHS = ('store', 'fornitore', 'admin', 'admin_ehs', 'ho', 'area')
 
 
 def _parse_data(value):
@@ -261,7 +262,7 @@ class BaseEHSSessioneActionView(APIView):
     def get_sessione_visibile(self, request, pk):
         user = request.user
         qs = EHSSessioneListCreateView().get_queryset_per_ruolo(user)
-        if user.livello_accesso in ('admin', 'admin_ehs', 'ho'):
+        if user.livello_accesso in ('admin', 'admin_ehs', 'ho', 'area'):
             qs = EHSSessione.objects.select_related('corso', 'negozio', 'fornitore', 'fornitore_richiesto', 'creata_da')
         return get_object_or_404(qs, pk=pk)
 
@@ -952,7 +953,7 @@ class EHSRegistriView(APIView):
             qs = qs.filter(negozio=user.store)
         elif user.livello_accesso == 'fornitore':
             qs = qs.filter(fornitore=user)
-        elif user.livello_accesso in ('admin', 'admin_ehs', 'ho'):
+        elif user.livello_accesso in ('admin', 'admin_ehs', 'ho', 'area'):
             params = request.query_params
             if params.get('negozio'):
                 qs = qs.filter(negozio_id=params['negozio'])
@@ -1017,7 +1018,7 @@ class EHSRegistroFileView(APIView):
     def get(self, request, pk, documento_id=None):
         user = request.user
         sessione = get_object_or_404(EHSSessione, pk=pk, stato='COMPLETATA')
-        autorizzato = user.livello_accesso in ('admin', 'admin_ehs', 'ho') or (
+        autorizzato = user.livello_accesso in ('admin', 'admin_ehs', 'ho', 'area') or (
             user.livello_accesso == 'store' and sessione.negozio_id == user.store_id
         ) or (user.livello_accesso == 'fornitore' and sessione.fornitore_id == user.id)
         if not autorizzato:

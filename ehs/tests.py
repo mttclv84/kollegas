@@ -71,6 +71,20 @@ class EHSFlussiTest(TestCase):
         sessione.refresh_from_db()
         return sessione
 
+    def test_area_vede_calendario_e_sessioni_senza_azioni(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        sessione = self._conferma(self._crea())
+        area = User.objects.create_user(email='am@x.it', password='x', cognome='A', nome='M', livello_accesso='area')
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(area).access_token}')
+        self.assertEqual([s['id'] for s in c.get('/api/ehs/sessioni/').json()], [sessione.id])
+        self.assertEqual(c.get(f'/api/ehs/sessioni/{sessione.id}/').status_code, 200)
+        self.assertTrue(any(e.get('ehs_sessione_id') == sessione.id for e in c.get('/api/ehs/calendario/').json()))
+        self.assertEqual(c.patch(f'/api/ehs/sessioni/{sessione.id}/annulla/', {}, format='json').status_code, 403)
+        self.assertEqual(c.post('/api/ehs/sessioni/', {'corso': self.corso.id}, format='json').status_code, 403)
+        sessione.refresh_from_db()
+        self.assertEqual(sessione.stato, 'CONFERMATA')
+
     # --- eliminazione definitiva ---
 
     def test_elimina_definitivamente_solo_admin_con_conferma(self):
