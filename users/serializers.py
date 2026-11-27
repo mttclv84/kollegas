@@ -23,6 +23,7 @@ def dati_utente_login(user):
         'cognome': user.cognome,
         'nome': user.nome,
         'livello_accesso': user.livello_accesso,
+        'ruolo_nome': user.ruolo.nome if user.ruolo_id else '',
         'store_id': user.store_id,
         'store_nome': str(user.store) if user.store else None,
         'foto': user.foto.url if user.foto else None,

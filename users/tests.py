@@ -498,7 +498,8 @@ class RegistroAccessiTest(TestCase):
         from .models import AuditLog
         self.assertEqual(self._login('area@x.it', 'Sbagliata-123').status_code, 401)
         self.assertEqual(self._login('nessuno@x.it', 'Sbagliata-123').status_code, 401)
-        self.assertEqual(self._login('area@x.it', 'Girasole-Blu-47').status_code, 200)
+        ok = self._login('area@x.it', 'Girasole-Blu-47')
+        self.assertEqual((ok.status_code, ok.data['user']['ruolo_nome']), (200, ''))  # il ruolo arriva con il login
         falliti = list(AuditLog.objects.filter(azione='accesso_fallito').order_by('id'))
         self.assertEqual([f.actor_id for f in falliti], [self.area.id, None])
         self.assertIn('Password errata', falliti[0].dettaglio)
