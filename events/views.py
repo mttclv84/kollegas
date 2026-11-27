@@ -265,6 +265,19 @@ class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
             self.permission_denied(self.request, message=MESSAGGIO_SOLA_VISIONE_EHS)
         if not puo_gestire_evento(self.request.user, serializer.instance):
             self.permission_denied(self.request, message=MESSAGGIO_NON_TUA)
+        from datetime import timedelta
+        from .permessi import GIORNI_MODIFICA_LIBERA
+        prima = serializer.instance
+        ora_inizio = dati.get('ora_inizio', prima.ora_inizio)
+        ora_fine = dati.get('ora_fine', prima.ora_fine)
+        if ora_inizio and ora_fine and ora_fine <= ora_inizio:
+            raise drf_serializers.ValidationError({'detail': "L'ora di fine deve essere dopo l'ora di inizio."})
+        oltre = bool(prima.created_at) and timezone.now() - prima.created_at > timedelta(days=GIORNI_MODIFICA_LIBERA)
+        motivazione = (self.request.data.get('motivazione') or '').strip()
+        if oltre and not motivazione:
+            raise drf_serializers.ValidationError({'detail': f'Sono passati più di {GIORNI_MODIFICA_LIBERA} giorni dalla '
+                                                             'creazione: indica la motivazione della modifica.'})
+        vecchi = {'orario': f'{prima.ora_inizio:%H:%M}-{prima.ora_fine:%H:%M}', 'location': prima.location_display or '—'}
         evento = serializer.save()
         if evento.edizione_id:
             # Le giornate di un'edizione sono sempre uguali: cambiano solo data e orari.
@@ -274,6 +287,13 @@ class EventoDetailView(generics.RetrieveUpdateDestroyAPIView):
                 for campo, valore in comuni.items():
                     setattr(giornata, campo, valore)
                 giornata.save()
+        nuovi = {'orario': f'{evento.ora_inizio:%H:%M}-{evento.ora_fine:%H:%M}', 'location': evento.location_display or '—'}
+        cambi = [f'{k}: {vecchi[k]} → {nuovi[k]}' for k in vecchi if vecchi[k] != nuovi[k]]
+        if motivazione:
+            cambi.append(f'motivazione: {motivazione}')
+        from users.views import log_audit
+        log_audit(self.request.user, 'modifica', 'Formazione', evento,
+                  ' · '.join([f'{evento.attivita.nome} del {evento.data:%d/%m/%Y}'] + (cambi or ['nessun cambio di orario o location'])))
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

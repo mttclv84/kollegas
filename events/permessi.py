@@ -1,5 +1,8 @@
 """Chi può modificare o annullare una formazione."""
 
+# Entro 7 giorni dalla creazione orari e location si modificano liberamente; dopo serve una motivazione.
+GIORNI_MODIFICA_LIBERA = 7
+
 MESSAGGIO_NON_TUA = ('Puoi modificare o annullare solo le formazioni create da te. '
                      "Per questa rivolgiti a chi l'ha creata o all'Admin.")
 

@@ -68,7 +68,7 @@ class EventoListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Evento
         fields = [
-            'id', 'data', 'ora_inizio', 'ora_fine', 'ore_totali', 'puo_modificare', 'created_by_nome',
+            'id', 'data', 'ora_inizio', 'ora_fine', 'ore_totali', 'puo_modificare', 'created_by_nome', 'created_at',
             'attivita', 'attivita_nome', 'attivita_tipologia',
             'host', 'host_nome', 'host_tipo',
             'location_store', 'location_esterna', 'location_display',

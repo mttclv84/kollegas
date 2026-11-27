@@ -519,3 +519,42 @@ class FormazioniDiAltriHOTest(TestCase):
         Evento.objects.filter(pk=pk).update(created_by=None)
         self.assertEqual(self.clienti['ho1'].delete(url, {'motivazione': 'no'}, format='json').status_code, 403)
         self.assertEqual(self.clienti['admin'].delete(url, {'motivazione': 'annullata'}, format='json').status_code, 204)
+
+
+class ModificaFormazioneTest(TestCase):
+    """Orario e location: liberi entro 7 giorni dalla creazione, poi con motivazione (registrata nell'Audit Log)."""
+
+    def setUp(self):
+        from .models import Host
+        self.att = AttivitaCatalogo.objects.create(nome='Customer Service', tipologia='ld')
+        self.host = Host.objects.create(descrizione='Trainer', posizione='interno')
+        self.c = APIClient()
+        self.ho = User.objects.create_user(email='ho@x.it', password='x', cognome='H', nome='O', livello_accesso='ho')
+        self.c.force_authenticate(self.ho)
+        r = self.c.post('/api/eventi/', {'data': '2027-03-01', 'ora_inizio': '09:00', 'ora_fine': '13:00',
+                                         'attivita': self.att.id, 'host': self.host.id, 'location_esterna': 'Milano'},
+                        format='json')
+        self.url = f"/api/eventi/{r.data['id']}/"
+        self.pk = r.data['id']
+
+    def test_entro_7_giorni_senza_motivazione(self):
+        from users.models import AuditLog
+        r = self.c.patch(self.url, {'ora_inizio': '10:00', 'ora_fine': '14:00', 'location_esterna': 'Roma'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        log = AuditLog.objects.filter(target_tipo='Formazione').latest('id')
+        self.assertIn('orario: 09:00-13:00 → 10:00-14:00', log.dettaglio)
+        self.assertIn('location: Milano → Roma', log.dettaglio)
+        self.assertEqual(self.c.patch(self.url, {'ora_inizio': '15:00', 'ora_fine': '14:00'}, format='json').status_code, 400)
+
+    def test_oltre_7_giorni_serve_la_motivazione(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from users.models import AuditLog
+        from .models import Evento
+        Evento.objects.filter(pk=self.pk).update(created_at=timezone.now() - timedelta(days=8))
+        r = self.c.patch(self.url, {'location_esterna': 'Torino'}, format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('motivazione', r.data['detail'])
+        r = self.c.patch(self.url, {'location_esterna': 'Torino', 'motivazione': 'Sala non disponibile'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn('motivazione: Sala non disponibile', AuditLog.objects.filter(target_tipo='Formazione').latest('id').dettaglio)
