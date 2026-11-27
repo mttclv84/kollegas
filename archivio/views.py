@@ -4,8 +4,9 @@ from django.core.files.storage import default_storage
 from django.http import FileResponse, Http404
 
 # Solo questi percorsi sono pubblici via /media/ (usati in <img src>): registri,
-# attestati e documenti utente si aprono solo dagli endpoint autenticati.
-PREFISSI_PUBBLICI = ('foto_utenti/',)
+# attestati e documenti utente si aprono solo dagli endpoint autenticati. Gli screenshot
+# della guida (guida/) mostrano solo dati di prova.
+PREFISSI_PUBBLICI = ('foto_utenti/', 'guida/')
 
 
 def servi_media(request, nome):

@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     'participants',
     'ehs',
     'archivio',
+    'guida',
     'django_filters',
 ]
 

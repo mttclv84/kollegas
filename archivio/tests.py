@@ -7,6 +7,7 @@ from .models import FileArchiviato
 
 class DatabaseStorageTest(TestCase):
     def test_salva_legge_elimina(self):
+        presenti = FileArchiviato.objects.count()  # es. gli screenshot iniziali della guida
         nome = default_storage.save('ehs/prova/registro.pdf', ContentFile(b'%PDF-1 contenuto'))
         self.assertTrue(default_storage.exists(nome))
         self.assertEqual(default_storage.open(nome).read(), b'%PDF-1 contenuto')
@@ -16,7 +17,7 @@ class DatabaseStorageTest(TestCase):
         self.assertNotEqual(nome, altro)
         default_storage.delete(nome)
         self.assertFalse(default_storage.exists(nome))
-        self.assertEqual(FileArchiviato.objects.count(), 1)
+        self.assertEqual(FileArchiviato.objects.count(), presenti + 1)
         with self.assertRaises(FileNotFoundError):
             default_storage.open(nome)
 
