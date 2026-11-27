@@ -429,3 +429,29 @@ class AreaSolaVisionePartecipantiTest(TestCase):
         iscrizione.refresh_from_db()
         self.assertEqual(iscrizione.stato, 'assente')
         self.assertEqual(Iscrizione.objects.count(), 1)
+
+
+class DettaglioDisattivatiTest(TestCase):
+    def test_dettaglio_separa_attivi_e_disattivati(self):
+        from datetime import date, time
+        from participants.models import Iscrizione
+        from users.views import _compute_stats
+        from .models import Evento, Host
+        ev = Evento.objects.create(data=date(2026, 1, 10), ora_inizio=time(9), ora_fine=time(13),
+                                   attivita=AttivitaCatalogo.objects.create(nome='Corso', tipologia='ld'),
+                                   host=Host.objects.create(descrizione='T', posizione='interno'))
+        attiva = User.objects.create_user(email='a@y.it', password='x', cognome='Attiva', nome='A')
+        spenta = User.objects.create_user(email='s@y.it', password='x', cognome='Spenta', nome='S', is_active=False)
+        for u in (attiva, spenta):
+            Iscrizione.objects.create(evento=ev, user=u, stato='partecipato')
+        admin, ho = APIClient(), APIClient()
+        admin.force_authenticate(User.objects.create_user(email='ad@y.it', password='x', cognome='A', nome='D', livello_accesso='admin'))
+        ho.force_authenticate(User.objects.create_user(email='ho@y.it', password='x', cognome='H', nome='O', livello_accesso='ho'))
+        nomi = lambda c, **p: [r['user_cognome'] for r in c.get('/api/report/', p).json()]
+        self.assertEqual(nomi(admin), ['Attiva'])
+        self.assertEqual(nomi(admin, disattivati=1), ['Spenta'])
+        self.assertEqual(nomi(ho), ['Attiva'])
+        self.assertEqual(ho.get('/api/report/', {'disattivati': 1}).status_code, 403)
+        self.assertEqual(admin.get('/api/report/excel/', {'disattivati': 1}).status_code, 200)
+        _, totale = _compute_stats({})
+        self.assertEqual(totale['maschi'] + totale['femmine'], 2)  # le Stats contano anche i disattivati

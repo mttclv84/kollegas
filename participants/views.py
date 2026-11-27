@@ -183,6 +183,17 @@ class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
         return super().destroy(request, *args, **kwargs)
 
 
+def filtra_profili(qs, request):
+    """Dettaglio: di norma solo i profili attivi; con ?disattivati=1 solo i disattivati
+    (pagina Dettaglio disattivati, Admin e Admin EHS). Le Stats non usano questo filtro."""
+    from rest_framework.exceptions import PermissionDenied
+    if request.query_params.get('disattivati'):
+        if request.user.livello_accesso not in ('admin', 'admin_ehs'):
+            raise PermissionDenied('Solo Admin e Admin EHS vedono il dettaglio dei profili disattivati.')
+        return qs.filter(user__is_active=False)
+    return qs.filter(user__is_active=True)
+
+
 class DeleteAssentiView(APIView):
     """DELETE /iscrizioni/assenti/ — rimuove tutte le iscrizioni con stato='assente'."""
     permission_classes = [IsAdminOrHOOrAreaEHS]
@@ -191,7 +202,7 @@ class DeleteAssentiView(APIView):
         user = request.user
         if sola_visione_iscrizioni(user):
             return Response({'detail': MSG_SOLA_VISIONE_AREA}, status=403)
-        qs = Iscrizione.objects.filter(stato='assente')
+        qs = filtra_profili(Iscrizione.objects.filter(stato='assente'), request)
         if sola_visione_ehs(user):
             qs = qs.exclude(evento__is_ehs=True)
         if user.livello_accesso == 'store':
@@ -227,6 +238,7 @@ class ReportView(APIView):
             'user', 'user__store', 'user__ruolo',
             'evento', 'evento__attivita', 'evento__location_store'
         ).filter(stato__in=['partecipato', 'assente', 'iscritto'])
+        qs = filtra_profili(qs, request)
 
         if user.livello_accesso == 'store':
             qs = qs.filter(user__store=user.store)

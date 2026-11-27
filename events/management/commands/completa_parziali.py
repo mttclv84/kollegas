@@ -18,7 +18,8 @@ class Command(BaseCommand):
         parser.add_argument('--applica', action='store_true')
 
     def handle(self, *args, **opt):
-        esiti = esiti_partecipazione(Iscrizione.objects.filter(evento__edizione__isnull=False))
+        # I profili disattivati restano come sono.
+        esiti = esiti_partecipazione(Iscrizione.objects.filter(evento__edizione__isnull=False, user__is_active=True))
         parziali = sorted(((uid, k[1]) for (uid, k), (esito, _) in esiti.items() if esito == PARZIALE),
                           key=lambda x: (x[1], x[0]))
         aggiornate = create = 0
