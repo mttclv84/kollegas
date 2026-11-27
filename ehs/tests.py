@@ -344,7 +344,7 @@ class EHSFlussiTest(TestCase):
         self.assertEqual(c.post(f'{url}{esp["id"]}/svuota/', {'conferma': 'no'}, format='json').status_code, 400)
         r = c.post(f'{url}{esp["id"]}/svuota/', {'conferma': 'SVUOTA'}, format='json')
         self.assertEqual(r.status_code, 200, r.content)
-        self.assertEqual(FileArchiviato.objects.count(), 1)  # resta solo l'attestato
+        self.assertEqual(FileArchiviato.objects.exclude(nome__startswith='guida/').count(), 1)  # resta solo l'attestato (gli screenshot della guida a parte)
         docs = {d['tipo']: d for d in c.get(f'/api/ehs/sessioni/{sessione.id}/').json()['documenti']}
         self.assertIsNotNone(docs['presenze']['archiviato_il'])
         self.assertFalse(docs['presenze']['disponibile'])
