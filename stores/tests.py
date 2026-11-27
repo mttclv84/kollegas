@@ -80,7 +80,7 @@ class CompletamentoZoomTest(TestCase):
 
 
 class ProgrammiCompletamentoTest(TestCase):
-    """DM Leadership: target i Department Manager, le due aule contano anche come percorso unico."""
+    """GWU TM-DM: target i Department Manager; con le vecchie aule separate vale il percorso completo."""
 
     def setUp(self):
         from datetime import date, time
@@ -99,7 +99,7 @@ class ProgrammiCompletamentoTest(TestCase):
         host = Host.objects.create(descrizione='T', posizione='interno')
         aule = []
         for n, giorno in (('1/2', date(2026, 3, 1)), ('2/2', date(2026, 12, 20))):
-            attivita = AttivitaCatalogo.objects.create(nome=f'DM Leadership - Aula {n}', tipologia='ld')
+            attivita = AttivitaCatalogo.objects.create(nome=f'GWU TM-DM - Leadership - Aula {n}', tipologia='ld')
             aule.append(Evento.objects.create(data=giorno, ora_inizio=time(9), ora_fine=time(17), attivita=attivita, host=host))
         self.aula2 = aule[1].attivita
         for utente, evento, stato in ((anna, aule[0], 'partecipato'), (anna, aule[1], 'partecipato'),
@@ -116,7 +116,7 @@ class ProgrammiCompletamentoTest(TestCase):
 
     def test_negozio_italia_e_area(self):
         atteso = [('Aula 1/2', 2, 0, 2), ('Aula 2/2', 1, 1, 2), ('Percorso completo', 1, 1, 2)]
-        params = {'programma': 'dm-leadership'}
+        params = {'programma': 'gwu-tm-dm'}
         negozio = self.c.get(f'/api/stores/{self.negozio.id}/completamento/', params).json()
         self.assertEqual(self._riassunto(negozio['corsi']), atteso)
         self.assertEqual(negozio['corsi'][2]['ruoli'][0]['etichetta'], 'DM')
@@ -128,7 +128,7 @@ class ProgrammiCompletamentoTest(TestCase):
         self.assertEqual(area['stores'][0]['total_untrained'], 1)  # solo Bruno, per l'aula 2/2
 
     def test_zoom_e_programma_sconosciuto(self):
-        r = self.c.get(f'/api/stores/{self.negozio.id}/completamento/zoom/', {'programma': 'dm-leadership'}).json()
+        r = self.c.get(f'/api/stores/{self.negozio.id}/completamento/zoom/', {'programma': 'gwu-tm-dm'}).json()
         self.assertEqual([u['cognome'] for u in r['utenti']], ['Rossi', 'Verdi'])
         self.assertIn('percorso', r['utenti'][0]['fatti'])
         self.assertNotIn('percorso', r['utenti'][1]['fatti'])
@@ -137,7 +137,7 @@ class ProgrammiCompletamentoTest(TestCase):
 
     def test_elenco_persone_dell_area(self):
         url = '/api/completamento/area/1/persone/'
-        r = self.c.get(url, {'programma': 'dm-leadership'}).json()
+        r = self.c.get(url, {'programma': 'gwu-tm-dm'}).json()
         self.assertEqual([c['nome_breve'] for c in r['corsi']], ['Aula 1/2', 'Aula 2/2', 'Percorso completo'])
         self.assertEqual([(p['cognome'], p['negozio'], p['ruolo']) for p in r['persone']],
                          [('Rossi', 'Firenze', 'DM'), ('Verdi', 'Firenze', 'DM')])  # solo il target, non la TM

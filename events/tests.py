@@ -131,7 +131,7 @@ class EdizioneMultiGiornataTest(TestCase):
 
     def setUp(self):
         from .models import Host
-        self.att = AttivitaCatalogo.objects.create(nome='DM Leadership', tipologia='ld')
+        self.att = AttivitaCatalogo.objects.create(nome='GWU TM-DM Leadership', tipologia='ld')
         self.host = Host.objects.create(descrizione='Trainer', posizione='interno')
         self.altro_host = Host.objects.create(descrizione='Altro', posizione='interno')
         self.admin = APIClient()
@@ -223,10 +223,10 @@ class EdizioneMultiGiornataTest(TestCase):
         for g in giornate:
             Iscrizione.objects.create(evento=g, user=completo, stato='partecipato')
             Iscrizione.objects.create(evento=g, user=parziale, stato='partecipato' if g == giornate[0] else 'assente')
-        corsi = self.admin.get(f'/api/stores/{negozio.id}/completamento/', {'programma': 'dm-leadership'}).json()['corsi']
+        corsi = self.admin.get(f'/api/stores/{negozio.id}/completamento/', {'programma': 'gwu-tm-dm'}).json()['corsi']
         self.assertEqual([(c['nome_breve'], c['completato'], c['parziali'], c['totale']) for c in corsi],
-                         [('DM Leadership', 1, 1, 2)])
-        zoom = self.admin.get(f'/api/stores/{negozio.id}/completamento/zoom/', {'programma': 'dm-leadership'}).json()
+                         [('GWU TM-DM Leadership', 1, 1, 2)])
+        zoom = self.admin.get(f'/api/stores/{negozio.id}/completamento/zoom/', {'programma': 'gwu-tm-dm'}).json()
         self.assertEqual({u['cognome']: (u['fatti'], u['parziali']) for u in zoom['utenti']},
                          {'C': ([self.att.id], []), 'Z': ([], [self.att.id])})
 
@@ -329,3 +329,48 @@ class UnisciGiornateTest(TestCase):
             call_command('unisci_giornate', stdout=StringIO(), **{**argomenti, 'origine': ['GWU TM-DM Leadership'],
                                                                    'destinazione': 'GWU TM-DM Leadership',
                                                                    'rinomina': None})
+
+
+class SpostaEventiTest(TestCase):
+    def test_sposta_tutte_le_edizioni_e_disattiva_l_origine(self):
+        from datetime import date, time
+        from io import StringIO
+        from django.core.management import call_command
+        from participants.models import Iscrizione
+        from .models import Edizione, Evento, Host
+        host = Host.objects.create(descrizione='T', posizione='interno')
+        dm = AttivitaCatalogo.objects.create(nome='DM Leadership', tipologia='ld')
+        tmdm = AttivitaCatalogo.objects.create(nome='GWU TM-DM Leadership', tipologia='ld')
+        edizione = Edizione.objects.create()
+        giorni = [Evento.objects.create(data=date(2024, 4, d), ora_inizio=time(9), ora_fine=time(17), attivita=dm,
+                                        host=host, edizione=edizione) for d in (17, 18)]
+        persona = User.objects.create_user(email='p@x.it', password='x', cognome='P', nome='P')
+        for g in giorni:
+            Iscrizione.objects.create(evento=g, user=persona, stato='partecipato')
+        call_command('sposta_eventi', origine='DM Leadership', destinazione='GWU TM-DM Leadership', stdout=StringIO())
+        self.assertEqual(dm.eventi.count(), 2)  # prova: nulla salvato
+        out = StringIO()
+        call_command('sposta_eventi', origine='DM Leadership', destinazione='GWU TM-DM Leadership', applica=True, stdout=out)
+        dm.refresh_from_db()
+        self.assertEqual((dm.eventi.count(), tmdm.eventi.count(), dm.is_active), (0, 2, False))
+        self.assertEqual(set(Evento.objects.values_list('edizione_id', flat=True)), {edizione.id})
+        self.assertIn('1 edizioni', out.getvalue())
+        self.assertIn('1 persone', out.getvalue())
+
+
+class FiltroTipologiaDettaglioTest(TestCase):
+    def test_dettaglio_filtra_per_tipo_di_attivita(self):
+        from datetime import date, time
+        from participants.models import Iscrizione
+        from .models import Evento, Host
+        host = Host.objects.create(descrizione='T', posizione='interno')
+        persona = User.objects.create_user(email='p@x.it', password='x', cognome='P', nome='P')
+        for nome, tipo in (('Corso', 'ld'), ('Colloquio', 'recruiting')):
+            ev = Evento.objects.create(data=date(2026, 1, 10), ora_inizio=time(9), ora_fine=time(10), host=host,
+                                       attivita=AttivitaCatalogo.objects.create(nome=nome, tipologia=tipo))
+            Iscrizione.objects.create(evento=ev, user=persona, stato='partecipato')
+        c = APIClient()
+        c.force_authenticate(User.objects.create_user(email='a@x.it', password='x', cognome='A', nome='A', livello_accesso='admin'))
+        self.assertEqual([r['attivita_nome'] for r in c.get('/api/report/', {'tipologia': 'recruiting'}).json()], ['Colloquio'])
+        self.assertEqual(len(c.get('/api/report/').json()), 2)
+        self.assertEqual(c.get('/api/report/excel/', {'tipologia': 'ld'}).status_code, 200)

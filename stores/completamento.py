@@ -22,17 +22,9 @@ PROGRAMMI = {
         ],
         'percorso': False,
     },
-    # Corso unico su più giornate (aule accorpate con il comando accorpa_aule). Finché
-    # l'accorpamento non è applicato si usano le vecchie aule, unite nel "percorso completo".
-    'dm-leadership': {
-        'titolo': 'DM Leadership',
-        'ruoli': ['Department Manager'],
-        'corsi': ['DM Leadership'],
-        'corsi_precedenti': ['DM Leadership - Aula 1/2', 'DM Leadership - Aula 2/2'],
-        'percorso': False,
-    },
+    # Corso unico su più giornate (comprende anche le edizioni ex "DM Leadership").
     'gwu-tm-dm': {
-        'titolo': 'GWU TM-DM Leadership',
+        'titolo': 'GWU TM-DM',
         'ruoli': ['Department Manager'],
         # Nome definitivo "GWU TM-DM Leadership"; il secondo vale finché non è rinominata.
         'corsi': ['GWU TM-DM Leadership', 'GWU TM-DM - Leadership'],

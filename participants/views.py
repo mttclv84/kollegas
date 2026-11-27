@@ -189,6 +189,8 @@ class DeleteAssentiView(APIView):
             qs = qs.filter(evento__data__lte=params['data_a'])
         if params.get('ruolo'):
             qs = qs.filter(user__ruolo_id=params['ruolo'])
+        if params.get('tipologia'):
+            qs = qs.filter(evento__attivita__tipologia=params['tipologia'])
         if params.get('store') and user.livello_accesso in ('admin', 'admin_ehs', 'ho', 'area'):
             qs = qs.filter(user__store_id=params['store'])
         count, _ = qs.delete()
@@ -222,6 +224,8 @@ class ReportView(APIView):
             qs = qs.filter(evento__data__lte=params['data_a'])
         if params.get('ruolo'):
             qs = qs.filter(user__ruolo_id=params['ruolo'])
+        if params.get('tipologia'):
+            qs = qs.filter(evento__attivita__tipologia=params['tipologia'])
         if params.get('store') and user.livello_accesso in ('admin', 'admin_ehs', 'ho', 'area'):
             qs = qs.filter(user__store_id=params['store'])
         return qs.order_by('-evento__data')
