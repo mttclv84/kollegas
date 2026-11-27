@@ -57,7 +57,10 @@ class AccessoProfiliBaseTest(TestCase):
         self.assertEqual(r.status_code, 403)
         self.assertIn('non ha accesso', r.data['detail'])
         self.assertNotIn('access', r.data)
-        self.assertFalse(AuditLog.objects.filter(actor=self.base).exists())
+        self.assertFalse(AuditLog.objects.filter(actor=self.base, azione='accesso').exists())
+        # Il tentativo resta nell'Audit Log come accesso non riuscito.
+        self.assertTrue(AuditLog.objects.filter(actor=self.base, azione='accesso_fallito',
+                                                dettaglio='Profilo senza accesso a Kollegas').exists())
 
     def test_password_errata_non_rivela_il_livello(self):
         self.assertEqual(self._login('base@x.it', 'sbagliata').status_code, 401)
@@ -474,3 +477,47 @@ class LimitiHOTest(TestCase):
         url = '/api/richieste-cancellazione/{}/'
         self.assertEqual(self.c.patch(url.format(altrui.id), {'stato': 'rifiutata'}, format='json').status_code, 403)
         self.assertEqual(self.c.patch(url.format(mia.id), {'stato': 'rifiutata'}, format='json').status_code, 200)
+
+
+class RegistroAccessiTest(TestCase):
+    """Audit Log: accessi riusciti e non riusciti (mai la password digitata); ultimo accesso solo per l'Admin."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.c = APIClient()
+        self.negozio = Store.objects.create(nome='Roma', comune='Roma', provincia='RM', email_store='rm@x.it')
+        self.area = User.objects.create_user(email='area@x.it', password='x', cognome='Rossi', nome='Anna',
+                                             livello_accesso='area', store=self.negozio)
+        self.area.imposta_password_personale('Girasole-Blu-47')
+        self.area.save()
+
+    def _login(self, email, password):
+        return self.c.post('/api/auth/login/', {'email': email, 'password': password}, format='json')
+
+    def test_accessi_registrati(self):
+        from .models import AuditLog
+        self.assertEqual(self._login('area@x.it', 'Sbagliata-123').status_code, 401)
+        self.assertEqual(self._login('nessuno@x.it', 'Sbagliata-123').status_code, 401)
+        self.assertEqual(self._login('area@x.it', 'Girasole-Blu-47').status_code, 200)
+        falliti = list(AuditLog.objects.filter(azione='accesso_fallito').order_by('id'))
+        self.assertEqual([f.actor_id for f in falliti], [self.area.id, None])
+        self.assertIn('Password errata', falliti[0].dettaglio)
+        self.assertEqual((falliti[1].target_repr, falliti[1].dettaglio), ('nessuno@x.it', 'Email non registrata in Kollegas'))
+        self.assertFalse(AuditLog.objects.filter(dettaglio__icontains='Sbagliata').exists())  # mai la password
+        self.assertEqual(AuditLog.objects.filter(azione='accesso', actor=self.area).count(), 1)
+        self.area.refresh_from_db()
+        self.assertIsNotNone(self.area.last_login)
+
+    def test_ultimo_accesso_visibile_solo_all_admin(self):
+        from rest_framework.test import APIClient
+        self._login('area@x.it', 'Girasole-Blu-47')
+
+        def ultimo(livello):
+            c = APIClient()
+            c.force_authenticate(User.objects.create_user(email=f'{livello}@y.it', password='x', cognome='Z',
+                                                          nome='Z', livello_accesso=livello))
+            righe = c.get('/api/users/').json()
+            righe = righe['results'] if isinstance(righe, dict) else righe
+            return next(r for r in righe if r['id'] == self.area.id)['last_login']
+        self.assertIsNotNone(ultimo('admin'))
+        self.assertIsNone(ultimo('ho'))

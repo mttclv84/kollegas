@@ -209,6 +209,7 @@ class AuditLog(models.Model):
         ('disattiva', 'Disattivazione'),
         ('riattiva', 'Riattivazione'),
         ('accesso', 'Accesso'),
+        ('accesso_fallito', 'Accesso non riuscito'),
     ]
 
     actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='azioni_log')

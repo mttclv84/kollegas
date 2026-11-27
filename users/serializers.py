@@ -35,9 +35,24 @@ def dati_utente_login(user):
 def _registra_tentativo_fallito(user):
     User.objects.filter(pk=user.pk).update(tentativi_falliti=F('tentativi_falliti') + 1)
     user.refresh_from_db(fields=['tentativi_falliti'])
-    if user.tentativi_falliti >= TENTATIVI_MASSIMI:
+    numero = user.tentativi_falliti
+    if numero >= TENTATIVI_MASSIMI:
         User.objects.filter(pk=user.pk).update(
             tentativi_falliti=0, bloccato_fino=timezone.now() + timedelta(minutes=MINUTI_BLOCCO))
+        _log_accesso_fallito(user, user.email, f'Password errata ({numero}° tentativo): accesso bloccato per {MINUTI_BLOCCO} minuti')
+    else:
+        _log_accesso_fallito(user, user.email, f'Password errata ({numero}° tentativo di {TENTATIVI_MASSIMI})')
+
+
+def _log_accesso_fallito(account, email, dettaglio):
+    """Audit Log (solo Admin): tentativo di accesso non riuscito. La password digitata non si salva mai."""
+    try:
+        AuditLog.objects.create(actor=account, azione='accesso_fallito', target_tipo='Accesso',
+                                target_id=account.id if account else None,
+                                target_repr=(account.nome_completo if account else (email or '')[:150]),
+                                dettaglio=dettaglio)
+    except Exception:
+        pass
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -53,6 +68,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         account = User.objects.filter(email=attrs.get('email')).first()
         if account and account.bloccato_fino and account.bloccato_fino > timezone.now():
+            _log_accesso_fallito(account, account.email, 'Tentativo durante il blocco per troppi errori')
             raise Throttled(detail=MESSAGGIO_TENTATIVI)
         try:
             data = super().validate(attrs)
@@ -60,13 +76,20 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             utente = getattr(self, 'user', None)
             # Credenziali corrette ma accesso non consentito: messaggio esplicito (403).
             if utente is not None and utente.is_active and not ha_accesso(utente):
+                _log_accesso_fallito(utente, utente.email, 'Profilo senza accesso a Kollegas')
                 raise PermissionDenied(messaggio_senza_accesso(utente))
             if utente is None and account:
-                _registra_tentativo_fallito(account)
+                if account.is_active:
+                    _registra_tentativo_fallito(account)
+                else:
+                    _log_accesso_fallito(account, account.email, 'Account disattivato')
+            elif utente is None:
+                _log_accesso_fallito(None, attrs.get('email'), 'Email non registrata in Kollegas')
             raise
         if self.user.tentativi_falliti or self.user.bloccato_fino:
             User.objects.filter(pk=self.user.pk).update(tentativi_falliti=0, bloccato_fino=None)
         data['user'] = dati_utente_login(self.user)
+        User.objects.filter(pk=self.user.pk).update(last_login=timezone.now())
         AuditLog.objects.create(actor=self.user, azione='accesso', target_tipo='Accesso',
                                 target_id=self.user.id, target_repr=self.user.nome_completo)
         return data
@@ -81,13 +104,21 @@ class RoleSerializer(serializers.ModelSerializer):
 class UserListSerializer(serializers.ModelSerializer):
     store_nome = serializers.CharField(source='store.nome', read_only=True)
     ruolo_nome = serializers.CharField(source='ruolo.nome', read_only=True)
+    # Data dell'ultimo accesso: la vede solo l'Admin.
+    last_login = serializers.SerializerMethodField()
+
+    def get_last_login(self, obj):
+        request = self.context.get('request')
+        if request and getattr(request.user, 'livello_accesso', None) == 'admin' and obj.last_login:
+            return obj.last_login
+        return None
 
     class Meta:
         model = User
         fields = [
             'id', 'cognome', 'nome', 'email', 'sesso', 'livello_accesso',
             'store', 'store_nome', 'codice_matricola', 'ruolo', 'ruolo_nome',
-            'foto', 'commento_mapping', 'long_absence', 'is_active', 'created_at',
+            'foto', 'commento_mapping', 'long_absence', 'is_active', 'created_at', 'last_login',
         ]
 
 
