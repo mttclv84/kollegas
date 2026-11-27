@@ -736,7 +736,7 @@ class EHSFornitoreDetailView(APIView):
         ).exclude(stato__in=('COMPLETATA', 'ANNULLATA', 'RIFIUTATA'))
             .select_related('corso', 'negozio').order_by('data_confermata', 'creata_il'))
         if in_corso:
-            # Elenca quali sono, così si trovano subito in EHS Calendar & Richieste.
+            # Elenca quali sono, così si trovano subito in EHS Calendar & Aule.
             def descrivi(s):
                 data = s.data_confermata or s.data_proposta
                 quando = timezone.localtime(data).strftime('%d/%m/%Y') if data else 'senza data'
@@ -744,7 +744,7 @@ class EHSFornitoreDetailView(APIView):
             elenco = '\n'.join(descrivi(s) for s in in_corso)
             return Response({
                 'detail': f'Il fornitore ha ancora {len(in_corso)} formazioni in corso: annullale (o eliminale) '
-                          f'da EHS Calendar & Richieste prima di cancellarlo.\n{elenco}',
+                          f'da EHS Calendar & Aule prima di cancellarlo.\n{elenco}',
                 'formazioni_in_corso': [
                     {'id': s.id, 'corso': s.corso.nome, 'negozio': s.negozio.nome, 'stato': s.stato,
                      'stato_label': s.get_stato_display(), 'data': s.data_confermata or s.data_proposta}

@@ -14,7 +14,7 @@ La password temporanea vale fino al 24 dicembre 2026. L'occhio accanto al campo 
 **Password dimenticata?** Nella pagina di login clicca **Richiedi reset password**: l'Admin ti invia una password temporanea. Per cambiarla in seguito usa l'icona 🔑 in basso nel menu."""),
     ('Il menu', 'menu.png', """Con il profilo Area consulti tutti i negozi senza modificare nulla. I gruppi **EHS** e **Report** si aprono cliccando sul titolo.
 
-- **EHS Calendar & Richieste**: le aule di formazione EHS.
+- **EHS Calendar & Aule**: le aule di formazione EHS.
 - **Panel Formazione EHS**: chi è in regola con la formazione obbligatoria EHS.
 - **Calendario**: tutte le formazioni, giorno per giorno.
 - **% Completamento**: avanzamento dei percorsi GWU RA-TM e GWU TM-DM.
@@ -42,7 +42,7 @@ Lo stato è Iscritto (azzurro), Partecipato (verde) o Assente (rosso)."""),
     ('Mapping, Development e Stats', None, """- **Mapping**: scegli lo store e vedi i collaboratori per ruolo; 💬 apre il commento (solo lettura).
 - **Development**: il percorso di crescita di una persona. Sezione in costruzione: per provarla cerca ALAIMO.
 - **Stats**: edizioni, partecipanti e ore, con filtri per tipo, attività e periodo ed export Excel."""),
-    ('Sezione EHS', 'ehs.png', """- **EHS Calendar & Richieste**: il calendario delle aule EHS e la scheda **Aule** con l'elenco; clicca un'aula per dettagli e partecipanti.
+    ('Sezione EHS', 'ehs.png', """- **EHS Calendar & Aule**: il calendario delle aule EHS e la scheda **Aule** con l'elenco; clicca un'aula per dettagli e partecipanti.
 - **Panel Formazione EHS**: chi è in regola con la formazione obbligatoria. 🟢 valida, 🟡 in scadenza, 🔴 da fare o scaduta, 🔵 iscritto."""),
     ('Cosa non puoi fare e domande frequenti', None, """Il profilo Area consulta ma non modifica: iscrizioni, presenze, formazioni, aule EHS e account li gestiscono Admin e HO.
 

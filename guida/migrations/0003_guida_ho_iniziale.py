@@ -57,7 +57,7 @@ Aprila e scegli **Approva** (la persona viene tolta dagli iscritti) oppure **Rif
 **Development** mostra i percorsi di crescita, **Stats** edizioni, partecipanti e ore."""),
     ('Sezione EHS', 'ho_ehs.png', """Per l'HO la sezione EHS è **in sola visione**: aule, iscrizioni e registri li gestiscono Admin, Admin EHS e fornitori.
 
-- **EHS Calendar & Richieste**: il calendario delle aule; clicca un'aula per dettagli e partecipanti.
+- **EHS Calendar & Aule**: il calendario delle aule; clicca un'aula per dettagli e partecipanti.
 - **Fornitori EHS**: l'elenco dei fornitori.
 - **Panel Formazione EHS**: chi è in regola. 🟢 valida, 🟡 in scadenza, 🔴 da fare o scaduta, 🔵 iscritto."""),
     ('Eccezioni Calendario e domande frequenti', None, """**Eccezioni Calendario**: inserisci festività o date particolari (es. Natale); compaiono nel Calendario con un puntino rosso.
