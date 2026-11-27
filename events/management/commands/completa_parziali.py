@@ -16,10 +16,15 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--applica', action='store_true')
+        parser.add_argument('--anche-disattivati', action='store_true', help='Include anche i profili disattivati')
+        parser.add_argument('--escludi', nargs='*', type=int, default=[], help='Id degli utenti da non toccare')
 
     def handle(self, *args, **opt):
-        # I profili disattivati restano come sono.
-        esiti = esiti_partecipazione(Iscrizione.objects.filter(evento__edizione__isnull=False, user__is_active=True))
+        # Di norma i profili disattivati restano come sono.
+        iscrizioni = Iscrizione.objects.filter(evento__edizione__isnull=False).exclude(user_id__in=opt['escludi'])
+        if not opt['anche_disattivati']:
+            iscrizioni = iscrizioni.filter(user__is_active=True)
+        esiti = esiti_partecipazione(iscrizioni)
         parziali = sorted(((uid, k[1]) for (uid, k), (esito, _) in esiti.items() if esito == PARZIALE),
                           key=lambda x: (x[1], x[0]))
         aggiornate = create = 0

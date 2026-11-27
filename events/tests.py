@@ -455,3 +455,27 @@ class DettaglioDisattivatiTest(TestCase):
         self.assertEqual(admin.get('/api/report/excel/', {'disattivati': 1}).status_code, 200)
         _, totale = _compute_stats({})
         self.assertEqual(totale['maschi'] + totale['femmine'], 2)  # le Stats contano anche i disattivati
+
+
+class CompletaParzialiOpzioniTest(TestCase):
+    def test_anche_disattivati_ed_esclusioni(self):
+        from datetime import date, time
+        from io import StringIO
+        from django.core.management import call_command
+        from participants.models import Iscrizione
+        from .models import Edizione, Evento, Host
+        host = Host.objects.create(descrizione='T', posizione='interno')
+        att = AttivitaCatalogo.objects.create(nome='Corso', tipologia='ld')
+        ed = Edizione.objects.create()
+        g1, g2 = [Evento.objects.create(data=date(2024, 4, d), ora_inizio=time(9), ora_fine=time(17), attivita=att,
+                                        host=host, edizione=ed) for d in (17, 18)]
+        spento = User.objects.create_user(email='s@x.it', password='x', cognome='Spento', nome='S', is_active=False)
+        escluso = User.objects.create_user(email='e@x.it', password='x', cognome='Escluso', nome='E', is_active=False)
+        for u in (spento, escluso):
+            Iscrizione.objects.create(evento=g1, user=u, stato='partecipato')
+        out = StringIO()
+        call_command('completa_parziali', applica=True, stdout=out)
+        self.assertIn('0 parziali', out.getvalue())  # di norma i disattivati non si toccano
+        call_command('completa_parziali', applica=True, anche_disattivati=True, escludi=[escluso.id], stdout=StringIO())
+        self.assertTrue(Iscrizione.objects.filter(evento=g2, user=spento, stato='partecipato').exists())
+        self.assertFalse(Iscrizione.objects.filter(evento=g2, user=escluso).exists())
