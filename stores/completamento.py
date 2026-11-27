@@ -101,7 +101,8 @@ def voci_programma(attivita, user_ids, percorso):
 
 
 def conteggi(voci, utenti, ruoli):
-    per_ruolo = [(r, {u.id for u in utenti if u.ruolo and u.ruolo.nome == r}) for r in ruoli]
+    # Chi è in Long Absence resta negli elenchi (ZOOM, Persone) ma non entra nelle percentuali.
+    per_ruolo = [(r, {u.id for u in utenti if u.ruolo and u.ruolo.nome == r and not u.long_absence}) for r in ruoli]
     tutti = set().union(*(ids for _, ids in per_ruolo))
 
     def blocco(voce, ids):

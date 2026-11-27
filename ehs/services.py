@@ -1444,16 +1444,18 @@ def completamento_obbligatori():
         for s in a.stores.all():
             area_di.setdefault(s.id, a.numero)
 
+    # Chi è in Long Absence non entra nelle percentuali (resta negli elenchi per persona).
+    conteggiate = [p for p in persone if not p.long_absence]
     per_negozio = {}
-    for p in persone:
+    for p in conteggiate:
         per_negozio.setdefault(p.store, []).append(stati[p.id])
     per_area = {}
-    for p in persone:
+    for p in conteggiate:
         per_area.setdefault(area_di.get(p.store_id), []).append(stati[p.id])
 
     return {
         'corsi': _corsi_json(corsi),
-        'italia': riepiloga(list(stati.values()), corsi_ids),
+        'italia': riepiloga([stati[p.id] for p in conteggiate], corsi_ids),
         'aree': [
             {'numero': a.numero, 'area_manager_retail': a.area_manager_retail, 'area_bp': a.area_bp,
              'corsi': riepiloga(per_area[a.numero], corsi_ids)}
@@ -1477,7 +1479,8 @@ def completamento_negozio(negozio):
     return {
         'negozio': {'id': negozio.id, 'nome': negozio.nome},
         'corsi': _corsi_json(corsi),
-        'riepilogo': riepiloga(list(stati.values()), [c.id for c in corsi]),
+        # Long Absence esclusi dal riepilogo, ma presenti nell'elenco delle persone.
+        'riepilogo': riepiloga([stati[p.id] for p in persone if not p.long_absence], [c.id for c in corsi]),
         'persone': [
             {'id': p.id, 'nome_completo': p.nome_completo, 'long_absence': p.long_absence,
              'ruolo_nome': p.ruolo.nome if p.ruolo else None,

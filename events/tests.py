@@ -374,3 +374,33 @@ class FiltroTipologiaDettaglioTest(TestCase):
         self.assertEqual([r['attivita_nome'] for r in c.get('/api/report/', {'tipologia': 'recruiting'}).json()], ['Colloquio'])
         self.assertEqual(len(c.get('/api/report/').json()), 2)
         self.assertEqual(c.get('/api/report/excel/', {'tipologia': 'ld'}).status_code, 200)
+
+
+class CompletaParzialiTest(TestCase):
+    def test_i_parziali_di_oggi_diventano_completati(self):
+        from datetime import date, time
+        from io import StringIO
+        from django.core.management import call_command
+        from participants.models import Iscrizione
+        from .edizioni import PARTECIPATO, esiti_partecipazione
+        from .models import Edizione, Evento, Host
+        host = Host.objects.create(descrizione='T', posizione='interno')
+        att = AttivitaCatalogo.objects.create(nome='GWU TM-DM Leadership', tipologia='ld')
+        edizione = Edizione.objects.create()
+        g1, g2 = [Evento.objects.create(data=date(2024, 4, d), ora_inizio=time(9), ora_fine=time(17), attivita=att,
+                                        host=host, edizione=edizione) for d in (17, 18)]
+        assente = User.objects.create_user(email='a@x.it', password='x', cognome='Assente', nome='Un giorno')
+        mancante = User.objects.create_user(email='m@x.it', password='x', cognome='Senza', nome='Seconda giornata')
+        completo = User.objects.create_user(email='c@x.it', password='x', cognome='Completo', nome='C')
+        for u, s1, s2 in ((assente, 'partecipato', 'assente'), (completo, 'partecipato', 'partecipato')):
+            Iscrizione.objects.create(evento=g1, user=u, stato=s1)
+            Iscrizione.objects.create(evento=g2, user=u, stato=s2)
+        Iscrizione.objects.create(evento=g1, user=mancante, stato='partecipato')
+
+        call_command('completa_parziali', stdout=StringIO())
+        self.assertEqual(Iscrizione.objects.get(evento=g2, user=assente).stato, 'assente')  # prova
+        out = StringIO()
+        call_command('completa_parziali', applica=True, stdout=out)
+        esiti = esiti_partecipazione(Iscrizione.objects.all())
+        self.assertTrue(all(e == PARTECIPATO for e, _ in esiti.values()))
+        self.assertIn('2 parziali diventano completati: 1 giornate segnate presenti, 1 giornate aggiunte', out.getvalue())

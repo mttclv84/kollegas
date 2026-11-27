@@ -148,3 +148,17 @@ class ProgrammiCompletamentoTest(TestCase):
             c.force_authenticate(User.objects.create_user(email=f'{livello}@y.it', password='x', cognome='X', nome='Y',
                                                           livello_accesso=livello))
             self.assertEqual(c.get(url).status_code, atteso, livello)
+
+    def test_long_absence_negli_elenchi_ma_non_nelle_percentuali(self):
+        from users.models import Role
+        User.objects.create_user(email='la@x.it', password='x', cognome='Zeta', nome='LA', store=self.negozio,
+                                 ruolo=Role.objects.get(nome='Department Manager'), long_absence=True)
+        params = {'programma': 'gwu-tm-dm'}
+        corsi = self.c.get(f'/api/stores/{self.negozio.id}/completamento/', params).json()['corsi']
+        self.assertEqual([c['totale'] for c in corsi], [2, 2, 2])  # la persona in LA non conta
+        self.assertEqual(self.c.get('/api/completamento/italia/', params).json()['italia'][0]['totale'], 2)
+        persone = self.c.get('/api/completamento/area/1/persone/', params).json()['persone']
+        self.assertEqual([(p['cognome'], p['long_absence']) for p in persone],
+                         [('Rossi', False), ('Verdi', False), ('Zeta', True)])
+        zoom = self.c.get(f'/api/stores/{self.negozio.id}/completamento/zoom/', params).json()
+        self.assertIn('Zeta', [u['cognome'] for u in zoom['utenti']])
