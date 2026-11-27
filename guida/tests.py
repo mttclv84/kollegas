@@ -27,6 +27,9 @@ class GuidaTest(TestCase):
         self.assertEqual(titoli[0], 'Primo accesso e password')
         self.assertEqual(len(titoli), 9)
         self.assertEqual(self._client('store').get('/api/guida/').json(), [])
+        ho = self._client('ho').get('/api/guida/').json()
+        self.assertEqual((len(ho), ho[2]['titolo']), (10, 'Creare una formazione'))
+        self.assertTrue(all(x['immagine_percorso'] for x in ho[:9]))  # l'ultimo argomento è senza screenshot
 
     def test_solo_admin_modifica_e_gli_altri_vedono_gli_attivi(self):
         admin, area = self._client('admin'), self._client('area')

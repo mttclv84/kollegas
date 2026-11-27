@@ -63,4 +63,6 @@ class DatabaseStorage(Storage):
 
     def get_available_name(self, name, max_length=None):
         # Come FileSystemStorage: aggiunge un suffisso se il nome è già usato.
-        return super().get_available_name(posixpath.normpath(name.replace(chr(92), '/')), max_length=max_length)
+        # Il nome alternativo di Django usa os.path.join: su Windows ricompare "\", quindi si normalizza anche l'uscita.
+        nome = super().get_available_name(posixpath.normpath(name.replace(chr(92), '/')), max_length=max_length)
+        return nome.replace(chr(92), '/')
