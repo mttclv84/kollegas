@@ -1,4 +1,6 @@
 from django.urls import path
+
+from .audit import AdozioneView, RegistraDownloadView
 from .views import (
     MeView, UserListCreateView, UserDetailView, DisattivatIListView,
     RoleListCreateView, RoleDetailView, PercorsoCrescitaListCreateView, PercorsoCrescitaDeleteView,
@@ -17,6 +19,8 @@ urlpatterns = [
     path('users/disattivati/', DisattivatIListView.as_view(), name='user-disattivati'),
     path('users/search/', DevelopmentSearchView.as_view(), name='user-search'),
     path('users/audit/', AuditLogListView.as_view(), name='audit-log'),
+    path('users/audit/adozione/', AdozioneView.as_view(), name='audit-adozione'),
+    path('users/audit/download/', RegistraDownloadView.as_view(), name='audit-download'),
     path('users/<int:pk>/', UserDetailView.as_view(), name='user-detail'),
     path('users/<int:pk>/reset-password/', UserResetPasswordView.as_view(), name='user-reset-password'),
     path('richieste-reset-password/', RichiesteResetPasswordView.as_view(), name='richieste-reset-password'),

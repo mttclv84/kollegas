@@ -309,6 +309,10 @@ class ReportExcelView(APIView):
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )
         risposta['Content-Disposition'] = f'attachment; filename="dettaglio_{date.today():%Y%m%d}.xlsx"'
+        from users.audit import filtri_leggibili, log_download
+        log_download(request.user, 'Export Excel Dettaglio', f'{ws.max_row - 1} righe',
+                     filtri_leggibili(request.query_params, ('data_da', 'data_a', 'store', 'ruolo', 'tipologia',
+                                                             'attivita', 'stato', 'search', 'disattivati')))
         return risposta
 
 

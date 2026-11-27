@@ -546,6 +546,8 @@ class EHSArchivioZipView(APIView):
             return Response({'detail': str(e)}, status=400)
         tmp.seek(0)
         nome = f'Kollegas_EHS_documenti_{timezone.localtime(esportazione.creata_il):%Y-%m-%d}.zip'
+        from users.audit import log_download
+        log_download(request.user, 'Archivio EHS (ZIP)', nome, target_id=esportazione.id)
         return FileResponse(tmp, as_attachment=True, filename=nome, content_type='application/zip')
 
 
@@ -1036,6 +1038,8 @@ class EHSRegistroFileView(APIView):
         except FileNotFoundError:
             # File caricato prima dell'archivio nel database: è andato perso con un deploy.
             return Response({'detail': 'File non più disponibile sul server: va ricaricato.'}, status=410)
+        from users.audit import log_download
+        log_download(user, 'Documento aula EHS', f'{doc.nome_originale or doc.file.name} — {sessione}', target_id=doc.id)
         return FileResponse(contenuto, content_type=content_type)
 
     def delete(self, request, pk, documento_id=None):

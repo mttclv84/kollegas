@@ -711,6 +711,9 @@ class StatsExportView(APIView):
         )
         response['Content-Disposition'] = 'attachment; filename="stats_formazione.xlsx"'
         wb.save(response)
+        from .audit import filtri_leggibili, log_download
+        log_download(request.user, 'Export Excel Stats', f'{len(result)} attività',
+                     filtri_leggibili(request.query_params, ('data_da', 'data_a', 'tipologia', 'attivita', 'anno')))
         return response
 
 
@@ -1040,6 +1043,8 @@ class UserDocDetailView(APIView):
             return Response({'detail': 'File non più disponibile sul server: va ricaricato.'}, status=410)
         response = FileResponse(contenuto, content_type='application/pdf')
         response['Content-Disposition'] = f'inline; filename="{doc.nome_file}"'
+        from .audit import log_download
+        log_download(request.user, 'Documento persona', f'{doc.user.nome_completo} — {doc.nome_file}', target_id=doc.id)
         return response
 
     def delete(self, request, pk):

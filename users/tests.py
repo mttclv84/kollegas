@@ -522,3 +522,49 @@ class RegistroAccessiTest(TestCase):
             return next(r for r in righe if r['id'] == self.area.id)['last_login']
         self.assertIsNotNone(ultimo('admin'))
         self.assertIsNone(ultimo('ho'))
+
+
+class AdozioneEDownloadTest(TestCase):
+    """Audit Log: riepilogo dell'adozione e registrazione dei download (solo Admin li vede)."""
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from rest_framework.test import APIClient
+        self.admin = User.objects.create_user(email='adm@x.it', password='x', cognome='Adm', nome='A', livello_accesso='admin')
+        self.c = APIClient()
+        self.c.force_authenticate(self.admin)
+        self.mai = User.objects.create_user(email='mai@x.it', password='x', cognome='Mai', nome='M', livello_accesso='area')
+        self.mai.imposta_password_temporanea('Temporanea-Test-55')
+        self.mai.save()
+        self.attivo = User.objects.create_user(email='att@x.it', password='x', cognome='Att', nome='A', livello_accesso='area')
+        User.objects.filter(pk=self.attivo.pk).update(last_login=timezone.now() - timedelta(days=10))
+        User.objects.create_user(email='base@x.it', password='x', cognome='Base', nome='B', livello_accesso='base')
+
+    def test_adozione(self):
+        r = self.c.get('/api/users/audit/adozione/')
+        self.assertEqual(r.status_code, 200)
+        area = next(x for x in r.data['livelli'] if x['livello'] == 'area')
+        self.assertEqual((area['totale'], area['entrati'], area['mai_entrati'], area['attivi_7'], area['attivi_30'],
+                          area['password_temporanea']), (2, 1, 1, 0, 1, 1))
+        self.assertNotIn('base', [x['livello'] for x in r.data['livelli']])  # senza accesso: esclusi
+        self.assertEqual([p['nome'] for p in r.data['password_temporanea']], ['Mai M'])
+        altro = APIClient_ho()
+        self.assertEqual(altro.get('/api/users/audit/adozione/').status_code, 403)
+
+    def test_download_registrati(self):
+        from .models import AuditLog
+        self.assertEqual(self.c.get('/api/stats/export/').status_code, 200)
+        self.assertEqual(self.c.post('/api/users/audit/download/', {'tipo': 'pdf_iscritti', 'oggetto': 'CS — 2027-03-01',
+                                                                    'oggetto_id': 5}, format='json').status_code, 201)
+        self.assertEqual(self.c.post('/api/users/audit/download/', {'tipo': 'altro'}, format='json').status_code, 400)
+        tipi = list(AuditLog.objects.filter(azione='download').values_list('target_tipo', flat=True).order_by('id'))
+        self.assertEqual(tipi, ['Export Excel Stats', 'PDF iscritti'])
+        self.assertEqual(AuditLog.objects.filter(azione='download').count(), 2)  # nessun doppione dal middleware
+
+
+def APIClient_ho():
+    from rest_framework.test import APIClient
+    c = APIClient()
+    c.force_authenticate(User.objects.create_user(email='ho9@x.it', password='x', cognome='H', nome='O', livello_accesso='ho'))
+    return c
