@@ -28,6 +28,14 @@ GIORNI_CHIUSURA_AULA = 7
 MSG_AULA_CHIUSA = 'Aula chiusa: sono passati più di 7 giorni, i partecipanti sono solo consultabili.'
 
 
+# L'Area Manager vede i partecipanti delle aule ma non fa nessuna azione sulle iscrizioni.
+MSG_SOLA_VISIONE_AREA = 'Il tuo profilo può solo visualizzare i partecipanti.'
+
+
+def sola_visione_iscrizioni(utente):
+    return utente.livello_accesso == 'area'
+
+
 def senza_limiti(evento, utente):
     """L'Admin interviene su qualunque aula; l'Admin EHS su quelle EHS (aggiunge e
     toglie partecipanti anche ad aula chiusa o completata, oltre il limite posti)."""
@@ -83,6 +91,8 @@ class IscrizioneListCreateView(generics.ListCreateAPIView):
         if target_user.livello_accesso in ('store', 'fornitore'):
             raise ValidationError({'detail': 'Questo account non può essere iscritto a una formazione.'})
         evento = serializer.validated_data['evento']
+        if sola_visione_iscrizioni(user):
+            self.permission_denied(self.request, message=MSG_SOLA_VISIONE_AREA)
         if evento.is_ehs and sola_visione_ehs(user):
             self.permission_denied(self.request, message=MESSAGGIO_SOLA_VISIONE_EHS)
         if aula_chiusa(evento, user):
@@ -133,6 +143,8 @@ class IscrizioneDetailView(generics.RetrieveUpdateDestroyAPIView):
         return qs
 
     def update(self, request, *args, **kwargs):
+        if sola_visione_iscrizioni(request.user):
+            return Response({'detail': MSG_SOLA_VISIONE_AREA}, status=status.HTTP_403_FORBIDDEN)
         evento = self.get_object().evento
         if evento.is_ehs and sola_visione_ehs(request.user):
             return Response({'detail': MESSAGGIO_SOLA_VISIONE_EHS}, status=status.HTTP_403_FORBIDDEN)
@@ -177,6 +189,8 @@ class DeleteAssentiView(APIView):
 
     def delete(self, request):
         user = request.user
+        if sola_visione_iscrizioni(user):
+            return Response({'detail': MSG_SOLA_VISIONE_AREA}, status=403)
         qs = Iscrizione.objects.filter(stato='assente')
         if sola_visione_ehs(user):
             qs = qs.exclude(evento__is_ehs=True)

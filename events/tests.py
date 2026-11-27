@@ -404,3 +404,28 @@ class CompletaParzialiTest(TestCase):
         esiti = esiti_partecipazione(Iscrizione.objects.all())
         self.assertTrue(all(e == PARTECIPATO for e, _ in esiti.values()))
         self.assertIn('2 parziali diventano completati: 1 giornate segnate presenti, 1 giornate aggiunte', out.getvalue())
+
+
+class AreaSolaVisionePartecipantiTest(TestCase):
+    def test_area_vede_gli_iscritti_ma_non_li_modifica(self):
+        from datetime import date, time
+        from participants.models import Iscrizione
+        from .models import Evento, Host
+        evento = Evento.objects.create(data=date(2027, 2, 10), ora_inizio=time(9), ora_fine=time(13),
+                                       attivita=AttivitaCatalogo.objects.create(nome='Corso', tipologia='ld'),
+                                       host=Host.objects.create(descrizione='T', posizione='interno'))
+        persona = User.objects.create_user(email='p@x.it', password='x', cognome='P', nome='P')
+        altra = User.objects.create_user(email='q@x.it', password='x', cognome='Q', nome='Q')
+        iscrizione = Iscrizione.objects.create(evento=evento, user=persona, stato='assente')
+        area = APIClient()
+        area.force_authenticate(User.objects.create_user(email='ar@x.it', password='x', cognome='A', nome='R',
+                                                         livello_accesso='area'))
+        self.assertEqual([i['user'] for i in area.get('/api/iscrizioni/', {'evento': evento.id}).json()], [persona.id])
+        self.assertEqual(area.post('/api/iscrizioni/', {'evento': evento.id, 'user': altra.id, 'stato': 'iscritto'},
+                                   format='json').status_code, 403)
+        self.assertEqual(area.patch(f'/api/iscrizioni/{iscrizione.id}/', {'stato': 'partecipato'}, format='json').status_code, 403)
+        self.assertEqual(area.delete(f'/api/iscrizioni/{iscrizione.id}/').status_code, 403)
+        self.assertEqual(area.delete('/api/iscrizioni/assenti/').status_code, 403)
+        iscrizione.refresh_from_db()
+        self.assertEqual(iscrizione.stato, 'assente')
+        self.assertEqual(Iscrizione.objects.count(), 1)
