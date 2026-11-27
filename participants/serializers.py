@@ -16,12 +16,13 @@ class IscrizioneSerializer(serializers.ModelSerializer):
     attivita_tipologia = serializers.CharField(source='evento.attivita.tipologia', read_only=True)
     richiesta_pendente_id = serializers.SerializerMethodField()
     esito_edizione = serializers.SerializerMethodField()
+    user_long_absence = serializers.BooleanField(source='user.long_absence', read_only=True)
 
     class Meta:
         model = Iscrizione
         fields = [
             'id', 'evento', 'user',
-            'user_cognome', 'user_nome', 'user_sesso', 'ruolo_nome',
+            'user_cognome', 'user_nome', 'user_sesso', 'ruolo_nome', 'user_long_absence',
             'store_id', 'store_nome',
             'stato',
             'attivita_nome', 'evento_data', 'evento_ore', 'location_display', 'attivita_tipologia',

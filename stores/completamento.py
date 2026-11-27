@@ -157,7 +157,7 @@ class CompletamentoZoomView(APIView):
             'store': {'id': store.id, 'nome': store.nome},
             'corsi': [{'id': v['id'], 'nome_breve': v['nome_breve'], 'percorso': v['percorso']} for v in voci],
             'utenti': [{
-                'id': u.id, 'cognome': u.cognome, 'nome': u.nome, 'ruolo': u.ruolo.nome,
+                'id': u.id, 'cognome': u.cognome, 'nome': u.nome, 'ruolo': u.ruolo.nome, 'long_absence': u.long_absence,
                 'fatti': [v['id'] for v in voci if u.id in v['fatti']],
                 'parziali': [v['id'] for v in voci if u.id in v['parziali']],
                 'iscritti': {v['id']: date_iscrizione[(u.id, v['id'])] for v in voci
@@ -238,7 +238,7 @@ class CompletamentoAreaPersoneView(APIView):
             'numero': area.numero,
             'corsi': [{'id': v['id'], 'nome_breve': v['nome_breve'], 'percorso': v['percorso']} for v in voci],
             'persone': [{
-                'id': u.id, 'cognome': u.cognome, 'nome': u.nome,
+                'id': u.id, 'cognome': u.cognome, 'nome': u.nome, 'long_absence': u.long_absence,
                 'ruolo': ETICHETTE_BREVI.get(u.ruolo.nome, u.ruolo.nome),
                 'negozio': u.store.nome if u.store else '',
                 'codice_negozio': u.store.codice_store if u.store else '',

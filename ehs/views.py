@@ -972,7 +972,8 @@ class EHSRegistriView(APIView):
                 'fornitore_id': s.fornitore_id,
                 'partecipanti_count': s.partecipanti.count(),
                 'partecipanti': [
-                    {'utente_nome': p.utente.nome_completo, 'presente': p.presente}
+                    {'utente_nome': p.utente.nome_completo, 'utente_long_absence': p.utente.long_absence,
+                     'presente': p.presente}
                     for p in s.partecipanti.all()
                 ],
                 'documenti': [{'id': d.id, 'nome_originale': d.nome_originale, 'tipo': d.tipo}

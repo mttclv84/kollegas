@@ -131,12 +131,13 @@ class EHSCorsoSerializer(serializers.ModelSerializer):
 class EHSPartecipanteSerializer(serializers.ModelSerializer):
     utente_nome = serializers.CharField(source='utente.nome_completo', read_only=True)
     utente_email = serializers.CharField(source='utente.email', read_only=True)
+    utente_long_absence = serializers.BooleanField(source='utente.long_absence', read_only=True)
     utente_store_nome = serializers.SerializerMethodField()
 
     class Meta:
         model = EHSPartecipante
         fields = [
-            'id', 'utente', 'utente_nome', 'utente_email', 'utente_store_nome', 'iscritto_il',
+            'id', 'utente', 'utente_nome', 'utente_long_absence', 'utente_email', 'utente_store_nome', 'iscritto_il',
             'presente', 'assente_motivo',
             'attestato_file', 'attestato_caricato_il',
             'completato', 'completato_il', 'scadenza_formazione',
@@ -369,7 +370,8 @@ class EHSPersonaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'nome_completo', 'codice_matricola', 'ruolo', 'ruolo_nome', 'store_nome', 'mansioni', 'formazioni']
+        fields = ['id', 'nome_completo', 'long_absence', 'codice_matricola', 'ruolo', 'ruolo_nome', 'store_nome',
+                  'mansioni', 'formazioni']
 
     def get_mansioni(self, obj):
         return [m.id for m in obj.ehs_mansioni.all()]

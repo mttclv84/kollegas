@@ -1119,6 +1119,7 @@ def scadenze_in_arrivo(negozio=None, giorni=GIORNI_ALERT_SCADENZA):
             'formazione_id': f.id,
             'utente_id': f.utente_id,
             'utente_nome': f.utente.nome_completo,
+            'utente_long_absence': f.utente.long_absence,
             'negozio_id': f.utente.store_id,
             'negozio_nome': f.utente.store.nome if f.utente.store else None,
             'corso_id': f.corso_id,
@@ -1478,7 +1479,8 @@ def completamento_negozio(negozio):
         'corsi': _corsi_json(corsi),
         'riepilogo': riepiloga(list(stati.values()), [c.id for c in corsi]),
         'persone': [
-            {'id': p.id, 'nome_completo': p.nome_completo, 'ruolo_nome': p.ruolo.nome if p.ruolo else None,
+            {'id': p.id, 'nome_completo': p.nome_completo, 'long_absence': p.long_absence,
+             'ruolo_nome': p.ruolo.nome if p.ruolo else None,
              'mansioni': [m.nome for m in p.ehs_mansioni.all()], 'stati': stati[p.id]}
             for p in persone
         ],
