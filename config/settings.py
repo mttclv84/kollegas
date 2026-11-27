@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'ehs',
     'archivio',
     'guida',
+    'assistenza',
     'django_filters',
 ]
 

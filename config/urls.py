@@ -17,6 +17,7 @@ urlpatterns = [
     path('api/', include('participants.urls')),
     path('api/', include('ehs.urls')),
     path('api/', include('guida.urls')),
+    path('api/', include('assistenza.urls')),
     # File caricati (archiviati nel database): pubblici solo i percorsi ammessi, es. foto.
     path('media/<path:nome>', servi_media, name='media'),
 ]
